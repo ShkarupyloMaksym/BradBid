@@ -151,8 +151,8 @@
 
 \begin{enumerate}
     \item Оскільки Firehose не підтримує прямий вхід з SQS:
-    \item Варіант 1 (Простий): Matcher Lambda пише JSON безпосередньо у Firehose $\rightarrow$ S3.
-    \item Варіант 2 (Дешевий): EventBridge Pipe читає \texttt{trades.fifo} $\rightarrow$ записує в S3 (або через Lambda).
+    \item Варіант 1 (Простий): Matcher Lambda пише JSON безпосередньо у Firehose $\to$ S3.
+    \item Варіант 2 (Дешевий): EventBridge Pipe читає \texttt{trades.fifo} $\to$ записує в S3 (або через Lambda).
     \item Glue crawler + Athena для SQL запитів по історії торгів.
     \item Місце для конфігів: \texttt{(place code here later)}.
 \end{enumerate}
@@ -177,7 +177,7 @@
 \subsection{Крок 12. Локальна розробка та тести}
 
 \begin{itemize}
-    \item Локальні unit-тести для логіки мaтчингу (без AWS).
+    \item Локальні unit-тести для логіки матчингу (без AWS).
     \item Використання \texttt{localstack} для емуляції SQS/DynamoDB локально.
     \item Місце для тестів: \texttt{(place code here later)}.
 \end{itemize}
