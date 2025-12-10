@@ -215,8 +215,12 @@ __marimo__/
 .terraform.lock.hcl
 
 *.zip
+package/
 
 # system files
 .DS_Store
 Thumbs.db
 .vscode/
+
+# Node.js
+node_modules/

@@ -1,0 +1,279 @@
+/* BradBid Exchange Styles */
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+    color: #e6e6e6;
+    min-height: 100vh;
+}
+
+#app {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 20px;
+}
+
+header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 20px;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 12px;
+    margin-bottom: 30px;
+}
+
+header h1 {
+    font-size: 1.8em;
+    color: #00d4ff;
+}
+
+#auth-status {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+}
+
+#user-status {
+    color: #888;
+}
+
+button {
+    padding: 10px 20px;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    font-weight: 600;
+    transition: all 0.3s ease;
+}
+
+#login-btn {
+    background: #00d4ff;
+    color: #1a1a2e;
+}
+
+#logout-btn {
+    background: #ff4757;
+    color: white;
+}
+
+button:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 5px 15px rgba(0, 212, 255, 0.3);
+}
+
+main {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 20px;
+}
+
+@media (max-width: 1200px) {
+    main {
+        grid-template-columns: 1fr 1fr;
+    }
+}
+
+@media (max-width: 768px) {
+    main {
+        grid-template-columns: 1fr;
+    }
+}
+
+section {
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 12px;
+    padding: 20px;
+}
+
+section h2 {
+    color: #00d4ff;
+    margin-bottom: 20px;
+    font-size: 1.2em;
+}
+
+/* Order Form */
+.order-form form {
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+}
+
+.form-group {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+
+.form-group label {
+    color: #888;
+    font-size: 0.9em;
+}
+
+.form-group input,
+.form-group select {
+    padding: 12px;
+    border: 1px solid #333;
+    border-radius: 8px;
+    background: #1a1a2e;
+    color: #e6e6e6;
+    font-size: 1em;
+}
+
+.form-group input:focus,
+.form-group select:focus {
+    outline: none;
+    border-color: #00d4ff;
+}
+
+.submit-btn {
+    background: linear-gradient(135deg, #00d4ff 0%, #0099cc 100%);
+    color: #1a1a2e;
+    padding: 15px;
+    font-size: 1.1em;
+    margin-top: 10px;
+}
+
+.submit-btn:hover {
+    background: linear-gradient(135deg, #00e6ff 0%, #00b3e6 100%);
+}
+
+/* Connection Status */
+#connection-status {
+    padding: 8px 15px;
+    border-radius: 20px;
+    font-size: 0.85em;
+    text-align: center;
+    margin-bottom: 15px;
+}
+
+#connection-status.connected {
+    background: rgba(0, 255, 136, 0.2);
+    color: #00ff88;
+}
+
+#connection-status.disconnected {
+    background: rgba(255, 71, 87, 0.2);
+    color: #ff4757;
+}
+
+/* Trades Table */
+#trades-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+#trades-table th,
+#trades-table td {
+    padding: 12px 8px;
+    text-align: right;
+    border-bottom: 1px solid #333;
+}
+
+#trades-table th {
+    color: #888;
+    font-weight: 500;
+    font-size: 0.85em;
+}
+
+#trades-table th:first-child,
+#trades-table td:first-child {
+    text-align: left;
+}
+
+#trades-table tbody tr {
+    animation: fadeIn 0.3s ease;
+}
+
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(-10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* Order Book */
+.book-container {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 15px;
+}
+
+.asks h3,
+.bids h3 {
+    font-size: 0.9em;
+    margin-bottom: 10px;
+}
+
+.asks h3 {
+    color: #ff4757;
+}
+
+.bids h3 {
+    color: #00ff88;
+}
+
+.book-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 5px 0;
+    font-size: 0.85em;
+}
+
+.asks .book-row {
+    color: #ff4757;
+}
+
+.bids .book-row {
+    color: #00ff88;
+}
+
+/* Footer */
+footer {
+    text-align: center;
+    padding: 30px;
+    color: #666;
+    font-size: 0.9em;
+}
+
+/* Notifications */
+.notification {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    padding: 15px 25px;
+    border-radius: 8px;
+    color: white;
+    animation: slideIn 0.3s ease;
+    z-index: 1000;
+}
+
+.notification.success {
+    background: #00ff88;
+    color: #1a1a2e;
+}
+
+.notification.error {
+    background: #ff4757;
+}
+
+@keyframes slideIn {
+    from {
+        opacity: 0;
+        transform: translateX(100px);
+    }
+    to {
+        opacity: 1;
+        transform: translateX(0);
+    }
+}
