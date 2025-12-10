@@ -1,0 +1,193 @@
+% !TEX TS-program = lualatex
+% !TEX spellcheck = uk_UA
+% !TEX options = --output-directory=build
+% !TEX encoding = UTF-8
+
+\documentclass[14pt]{extarticle}
+
+\input{preamble.tex}
+\begin{document}
+
+\section{Покрокова інструкція з реалізації архітектури на AWS (SQS Edition)}
+
+Нижче наведено детальний план реалізації MVP біржового сервісу на AWS у команді з двох осіб, адаптований під \textbf{Free Tier} (використання SQS замість Kinesis, відмова від NAT Gateway). У місцях, де має бути код, подано позначку \texttt{(place code here later)}.
+
+\subsection{Розподіл ролей у команді}
+
+\textbf{Учасник A (Інфраструктура + Frontend):}
+\begin{itemize}
+    \item Створення базової інфраструктури AWS (VPC Public-only, SG).
+    \item Налаштування CloudFront, Route 53.
+    \item Конфігурація Cognito User Pool та App Client.
+    \item Розробка та деплой SPA/PWA.
+    \item Моніторинг та керування витратами.
+\end{itemize}
+
+\textbf{Учасник B (Backend + Data Pipeline):}
+\begin{itemize}
+    \item Налаштування SQS FIFO, DynamoDB.
+    \item Створення Lambda-функцій (ingest, matcher).
+    \item Розгортання ElastiCache Redis (або Docker на EC2 Free Tier).
+    \item Реалізація аналітичного пайплайну (S3, Glue, Athena).
+    \item Налаштування спостереження (CloudWatch).
+\end{itemize}
+
+\subsection{Крок 1. Базовий проєкт}
+
+\begin{enumerate}
+    \item Створити GitHub репозиторій зі структурою:
+    \begin{itemize}
+        \item \texttt{/infra} --- Terraform.
+        \item \texttt{/backend} --- Lambda функції.
+        \item \texttt{/frontend} --- SPA.
+        \item \texttt{/docs} --- документація.
+    \end{itemize}
+    \item Створити IAM користувачів для учасників.
+    \item Додати скелет Terraform: \texttt{(place code here later)}.
+\end{enumerate}
+
+\subsection{Крок 2. Мережа та базова інфраструктура (Учасник A)}
+
+\begin{enumerate}
+    \item Створити VPC:
+    \begin{itemize}
+        \item \textbf{Тільки Public Subnets} (для економії на NAT Gateway).
+        \item Internet Gateway для доступу Lambda до зовнішніх API.
+    \end{itemize}
+    \item Налаштувати Security Groups:
+    \begin{itemize}
+        \item Redis SG: дозволити трафік лише від Lambda SG (порт 6379).
+        \item Lambda SG: вихідний трафік 0.0.0.0/0.
+    \end{itemize}
+    \item Місце для IaC: \texttt{(place code here later)}.
+\end{enumerate}
+
+\subsection{Крок 3. Ідентифікація та доступ (Учасник A)}
+
+\begin{enumerate}
+    \item Створити Cognito User Pool.
+    \item Створити App Client для SPA.
+    \item Налаштувати IAM ролі:
+    \begin{itemize}
+        \item ролі виконання Lambda (політики SQS, DynamoDB, Logs),
+        \item роль authorizer для API Gateway.
+    \end{itemize}
+    \item Місце для конфігурації: \texttt{(place code here later)}.
+\end{enumerate}
+
+\subsection{Крок 4. API Gateway та CloudFront (Учасник A)}
+
+\begin{enumerate}
+    \item Створити API Gateway HTTP endpoint для REST API.
+    \item Створити WebSocket API для стрімінгу котирувань.
+    \item Підключити Cognito Authorizer.
+    \item Створити CloudFront для SPA.
+    \item WAF опущено для економії бюджету.
+    \item Місце для конфігів: \texttt{(place code here later)}.
+\end{enumerate}
+
+\subsection{Крок 5. Черги та сховище (Учасник B)}
+
+\begin{enumerate}
+    \item Створити \textbf{SQS FIFO} черги:
+    \begin{itemize}
+        \item \texttt{orders.fifo} (для вхідних ордерів),
+        \item \texttt{trades.fifo} (для виконаних угод).
+    \end{itemize}
+    \item Увімкнути \texttt{ContentBasedDeduplication} у чергах.
+    \item Створити DynamoDB таблиці:
+    \begin{itemize}
+        \item \texttt{Orders},
+        \item \texttt{Trades}.
+    \end{itemize}
+    \item Створити S3 бакет для аналітики.
+    \item Місце для інфраструктури: \texttt{(place code here later)}.
+\end{enumerate}
+
+\subsection{Крок 6. Redis (Кеш) (Учасник B)}
+
+\begin{enumerate}
+    \item Створити ElastiCache Redis (\texttt{cache.t3.micro}) або EC2 з Docker.
+    \item \textbf{Важливо:} Налаштувати Security Groups так, щоб Lambda з Public Subnet мала доступ до Redis (використовувати Private IP або VPC peering, якщо Redis у Private).
+    \item Місце для TF: \texttt{(place code here later)}.
+\end{enumerate}
+
+\subsection{Крок 7. Lambda-функції (Учасник B)}
+
+\subsubsection*{Ingest Lambda}
+\begin{itemize}
+    \item Тригер: API Gateway (REST \texttt{POST /orders}).
+    \item Валідація JSON.
+    \item Відправка повідомлення у \texttt{SQS: orders.fifo}.
+    \item Використання \texttt{MessageGroupId} = торгова пара (напр. \texttt{BTC-USD}) для гарантії порядку.
+    \item Місце для коду: \texttt{(place code here later)}.
+\end{itemize}
+
+\subsubsection*{Matcher Lambda}
+\begin{itemize}
+    \item Тригер: \texttt{SQS: orders.fifo}.
+    \item \textbf{Важливо:} \texttt{BatchSize=1} або \texttt{10} (для MVP краще 1, щоб уникнути складнощів з частковими помилками).
+    \item Логіка:
+    \begin{enumerate}
+        \item Отримати ордер з SQS.
+        \item Завантажити OrderBook з Redis.
+        \item Знайти зустрічний ордер (Match).
+        \item Оновити Redis (через Lua скрипт для атомарності).
+        \item Зберегти результат у DynamoDB.
+        \item Відправити повідомлення у \texttt{SQS: trades.fifo}.
+    \end{enumerate}
+    \item Місце для коду: \texttt{(place code here later)}.
+\end{itemize}
+
+\subsection{Крок 8. WebSocket повідомлення (Учасники A+B)}
+
+\begin{enumerate}
+    \item Matcher Lambda (або окрема Lambda-слухач \texttt{trades.fifo}) викликає API Gateway Management API.
+    \item Розсилка оновлень підключеним клієнтам (Broadcast ticker).
+    \item Місце для коду push-сервісу: \texttt{(place code here later)}.
+\end{enumerate}
+
+\subsection{Крок 9. Аналітичний шар (Учасник B)}
+
+\begin{enumerate}
+    \item Оскільки Firehose не підтримує прямий вхід з SQS:
+    \item Варіант 1 (Простий): Matcher Lambda пише JSON безпосередньо у Firehose \texttt{->} S3.
+    \item Варіант 2 (Дешевий): EventBridge Pipe читає \texttt{trades.fifo} \texttt{->} записує в S3 (або через Lambda).
+    \item Glue crawler + Athena для SQL запитів по історії торгів.
+    \item Місце для конфігів: \texttt{(place code here later)}.
+\end{enumerate}
+
+\subsection{Крок 10. Спостереження (Учасники A+B)}
+
+\begin{enumerate}
+    \item CloudWatch Logs для всіх Lambda.
+    \item Метрики SQS: \texttt{ApproximateNumberOfMessagesVisible} (глибина черги).
+    \item X-Ray (опційно, якщо вписується у Free Tier).
+    \item Місце для JSON дашбордів: \texttt{(place code here later)}.
+\end{enumerate}
+
+\subsection{Крок 11. CI/CD (спільно)}
+
+\begin{enumerate}
+    \item GitHub Actions для \texttt{terraform apply} та деплою Lambda.
+    \item Додати \texttt{terraform destroy} workflow для економії коштів.
+    \item Місце для YAML: \texttt{(place code here later)}.
+\end{enumerate}
+
+\subsection{Крок 12. Локальна розробка та тести}
+
+\begin{itemize}
+    \item Локальні unit-тести для логіки матчингу (без AWS).
+    \item Використання \texttt{localstack} для емуляції SQS/DynamoDB локально.
+    \item Місце для тестів: \texttt{(place code here later)}.
+\end{itemize}
+
+\subsection{Крок 13. Фінальна демонстрація}
+
+\begin{itemize}
+    \item Показати "живу" торгівлю: створення ордеру -> оновлення графіку.
+    \item Показати логи в CloudWatch та дані в S3/Athena.
+    \item Пояснити вибір архітектури (SQS vs Kinesis) з точки зору вартості.
+\end{itemize}
+
+\end{document}
