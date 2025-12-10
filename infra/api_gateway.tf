@@ -55,12 +55,22 @@ resource "aws_api_gateway_deployment" "exchange_api" {
   ]
 
   rest_api_id = aws_api_gateway_rest_api.exchange_api.id
-  stage_name  = "prod"
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+# API Gateway Stage
+resource "aws_api_gateway_stage" "prod" {
+  deployment_id = aws_api_gateway_deployment.exchange_api.id
+  rest_api_id   = aws_api_gateway_rest_api.exchange_api.id
+  stage_name    = "prod"
 }
 
 # Output
 output "api_gateway_url" {
   description = "URL of the API Gateway endpoint"
-  value       = "${aws_api_gateway_deployment.exchange_api.invoke_url}/orders"
+  value       = "${aws_api_gateway_stage.prod.invoke_url}/orders"
 }
 

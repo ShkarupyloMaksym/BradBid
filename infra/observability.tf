@@ -10,7 +10,7 @@ resource "aws_cloudwatch_dashboard" "exchange_dashboard" {
 
   dashboard_body = jsonencode({
     widgets = [
-      # Kinesis Metrics - Orders Stream
+      # SQS Metrics - Orders Queue
       {
         type   = "metric"
         x      = 0
@@ -20,19 +20,22 @@ resource "aws_cloudwatch_dashboard" "exchange_dashboard" {
 
         properties = {
           metrics = [
-            ["AWS/Kinesis", "IncomingRecords", { "stat" = "Sum", "label" = "Incoming Records" }],
-            [".", "GetRecords.IteratorAgeMilliseconds", { "stat" = "Average", "label" = "Iterator Age (ms)" }],
-            [".", "PutRecord.Success", { "stat" = "Sum", "label" = "Put Success" }],
-            [".", "PutRecord.ThrottledRecords", { "stat" = "Sum", "label" = "Throttled" }]
+            ["AWS/SQS", "NumberOfMessagesSent", { "stat" = "Sum", "label" = "Messages Sent" }],
+            [".", "NumberOfMessagesReceived", { "stat" = "Sum", "label" = "Messages Received" }],
+            [".", "ApproximateNumberOfMessagesVisible", { "stat" = "Average", "label" = "Messages Visible" }],
+            [".", "ApproximateAgeOfOldestMessage", { "stat" = "Maximum", "label" = "Oldest Message Age (s)" }]
           ]
           view    = "timeSeries"
           stacked = false
           region  = var.aws_region
-          title   = "Kinesis Orders Stream Metrics"
+          title   = "SQS Orders Queue Metrics"
           period  = 300
+          dimensions = {
+            QueueName = aws_sqs_queue.orders_queue.name
+          }
         }
       },
-      # Kinesis Metrics - Trades Stream
+      # SQS Metrics - Trades Queue
       {
         type   = "metric"
         x      = 12
@@ -42,16 +45,17 @@ resource "aws_cloudwatch_dashboard" "exchange_dashboard" {
 
         properties = {
           metrics = [
-            ["AWS/Kinesis", "IncomingRecords", { "stat" = "Sum", "label" = "Incoming Records" }],
-            [".", "GetRecords.IteratorAgeMilliseconds", { "stat" = "Average", "label" = "Iterator Age (ms)" }]
+            ["AWS/SQS", "NumberOfMessagesSent", { "stat" = "Sum", "label" = "Messages Sent" }],
+            [".", "NumberOfMessagesReceived", { "stat" = "Sum", "label" = "Messages Received" }],
+            [".", "ApproximateNumberOfMessagesVisible", { "stat" = "Average", "label" = "Messages Visible" }]
           ]
           view    = "timeSeries"
           stacked = false
           region  = var.aws_region
-          title   = "Kinesis Trades Stream Metrics"
+          title   = "SQS Trades Queue Metrics"
           period  = 300
           dimensions = {
-            StreamName = aws_kinesis_stream.trades.name
+            QueueName = aws_sqs_queue.trades_queue.name
           }
         }
       },
@@ -174,11 +178,11 @@ resource "aws_cloudwatch_dashboard" "exchange_dashboard" {
           title   = "ElastiCache Redis Metrics"
           period  = 300
           dimensions = {
-            CacheClusterId = aws_elasticache_cluster.redis.cluster_id
+            ReplicationGroupId = aws_elasticache_replication_group.redis.id
           }
         }
       },
-      # Kinesis Iterator Age (Lag) - Critical Metric
+      # SQS Queue Age - Critical Metric
       {
         type   = "metric"
         x      = 12
@@ -188,22 +192,22 @@ resource "aws_cloudwatch_dashboard" "exchange_dashboard" {
 
         properties = {
           metrics = [
-            ["AWS/Kinesis", "GetRecords.IteratorAgeMilliseconds", { "stat" = "Maximum", "label" = "Max Iterator Age (ms)" }],
-            [".", "GetRecords.IteratorAgeMilliseconds", { "stat" = "Average", "label" = "Avg Iterator Age (ms)" }]
+            ["AWS/SQS", "ApproximateAgeOfOldestMessage", { "stat" = "Maximum", "label" = "Max Message Age (s)" }],
+            [".", "ApproximateNumberOfMessagesVisible", { "stat" = "Average", "label" = "Messages in Queue" }]
           ]
           view    = "timeSeries"
           stacked = false
           region  = var.aws_region
-          title   = "Kinesis Iterator Age (Lag) - Orders Stream"
+          title   = "SQS Orders Queue Age"
           period  = 300
           dimensions = {
-            StreamName = aws_kinesis_stream.orders.name
+            QueueName = aws_sqs_queue.orders_queue.name
           }
           annotations = {
             horizontal = [
               {
-                value     = 60000
-                label     = "1 minute threshold"
+                value     = 300
+                label     = "5 minute threshold"
                 color     = "#ff0000"
                 fill      = "below"
                 visible   = true
@@ -219,25 +223,25 @@ resource "aws_cloudwatch_dashboard" "exchange_dashboard" {
 
 # CloudWatch Alarms for critical metrics
 
-# Alarm for Kinesis Iterator Age (Lag)
-resource "aws_cloudwatch_metric_alarm" "kinesis_lag_alarm" {
-  alarm_name          = "kinesis-orders-lag-alarm"
+# Alarm for SQS Message Age
+resource "aws_cloudwatch_metric_alarm" "sqs_age_alarm" {
+  alarm_name          = "sqs-orders-age-alarm"
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = 2
-  metric_name         = "GetRecords.IteratorAgeMilliseconds"
-  namespace           = "AWS/Kinesis"
+  metric_name         = "ApproximateAgeOfOldestMessage"
+  namespace           = "AWS/SQS"
   period              = 300
-  statistic           = "Average"
-  threshold           = 60000  # 1 minute in milliseconds
-  alarm_description   = "Alert when Kinesis iterator age exceeds 1 minute"
+  statistic           = "Maximum"
+  threshold           = 300  # 5 minutes in seconds
+  alarm_description   = "Alert when SQS message age exceeds 5 minutes"
   treat_missing_data  = "notBreaching"
 
   dimensions = {
-    StreamName = aws_kinesis_stream.orders.name
+    QueueName = aws_sqs_queue.orders_queue.name
   }
 
   tags = {
-    Name = "Kinesis Lag Alarm"
+    Name = "SQS Age Alarm"
   }
 }
 
@@ -298,7 +302,7 @@ resource "aws_cloudwatch_metric_alarm" "redis_cpu_alarm" {
   treat_missing_data  = "notBreaching"
 
   dimensions = {
-    CacheClusterId = aws_elasticache_cluster.redis.cluster_id
+    ReplicationGroupId = aws_elasticache_replication_group.redis.id
   }
 
   tags = {

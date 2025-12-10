@@ -82,6 +82,8 @@ resource "aws_s3_bucket_lifecycle_configuration" "data_lake" {
     id     = "transition-to-glacier"
     status = "Enabled"
 
+    filter {}
+
     transition {
       days          = 30
       storage_class = "GLACIER_IR"  # Glacier Instant Retrieval - cheaper for infrequent access
@@ -91,6 +93,8 @@ resource "aws_s3_bucket_lifecycle_configuration" "data_lake" {
   rule {
     id     = "delete-old-data"
     status = "Enabled"
+
+    filter {}
 
     expiration {
       days = 90  # Delete data older than 90 days to save costs

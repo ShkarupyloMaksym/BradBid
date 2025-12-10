@@ -53,12 +53,15 @@ resource "aws_iam_role_policy" "lambda_policy" {
       {
         Effect = "Allow"
         Action = [
-          "kinesis:PutRecord",
-          "kinesis:PutRecords"
+          "sqs:SendMessage",
+          "sqs:GetQueueAttributes",
+          "sqs:ReceiveMessage",
+          "sqs:DeleteMessage",
+          "sqs:GetQueueUrl"
         ]
         Resource = [
-          aws_kinesis_stream.orders.arn,
-          aws_kinesis_stream.trades.arn
+          aws_sqs_queue.orders_queue.arn,
+          aws_sqs_queue.trades_queue.arn
         ]
       },
       {
@@ -129,7 +132,7 @@ resource "aws_lambda_function" "ingest" {
 
   environment {
     variables = {
-      KINESIS_ORDERS_STREAM = aws_kinesis_stream.orders.name
+      ORDERS_QUEUE_URL = aws_sqs_queue.orders_queue.url
       DYNAMODB_ORDERS_TABLE = aws_dynamodb_table.orders.name
       AWS_XRAY_CONTEXT_MISSING = "LOG_ERROR"
     }
@@ -166,10 +169,10 @@ resource "aws_lambda_function" "matcher" {
   environment {
     variables = {
       REDIS_SECRET_ARN = aws_secretsmanager_secret.redis_auth.arn
-      REDIS_ENDPOINT   = aws_elasticache_cluster.redis.cache_nodes[0].address
+      REDIS_ENDPOINT   = aws_elasticache_replication_group.redis.primary_endpoint_address
       REDIS_PORT       = "6379"
       DYNAMODB_TRADES_TABLE = aws_dynamodb_table.trades.name
-      KINESIS_TRADES_STREAM  = aws_kinesis_stream.trades.name
+      TRADES_QUEUE_URL  = aws_sqs_queue.trades_queue.url
       AWS_XRAY_CONTEXT_MISSING = "LOG_ERROR"
     }
   }
@@ -191,17 +194,12 @@ resource "aws_cloudwatch_log_group" "matcher_lambda" {
   retention_in_days = 7  # Keep logs for 7 days to save costs
 }
 
-# Event Source Mapping: Kinesis Orders Stream -> Matcher Lambda
-resource "aws_lambda_event_source_mapping" "matcher_kinesis" {
-  event_source_arn  = aws_kinesis_stream.orders.arn
-  function_name     = aws_lambda_function.matcher.arn
-  starting_position = "LATEST"
-  batch_size        = 10  # Process 10 records per invocation (cost optimization)
-  maximum_batching_window_in_seconds = 5  # Wait up to 5 seconds to batch
+# Event Source Mapping: SQS Orders Queue -> Matcher Lambda
+resource "aws_lambda_event_source_mapping" "matcher_sqs" {
+  event_source_arn = aws_sqs_queue.orders_queue.arn
+  function_name    = aws_lambda_function.matcher.arn
+  batch_size       = 10  # Process 10 messages per invocation (cost optimization)
 
-  # Enable parallelization for better throughput
-  parallelization_factor = 1  # 1 shard = 1 concurrent execution
-
-  # Error handling with DLQ
+  # Error handling with partial batch responses
   function_response_types = ["ReportBatchItemFailures"]
 }
