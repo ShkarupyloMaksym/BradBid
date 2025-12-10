@@ -151,8 +151,8 @@
 
 \begin{enumerate}
     \item Оскільки Firehose не підтримує прямий вхід з SQS:
-    \item Варіант 1 (Простий): Matcher Lambda пише JSON безпосередньо у Firehose $\to$ S3.
-    \item Варіант 2 (Дешевий): EventBridge Pipe читає \texttt{trades.fifo} $\to$ записує в S3 (або через Lambda).
+    \item Варіант 1 (Простий): Matcher Lambda пише JSON безпосередньо у Firehose \texttt{->} S3.
+    \item Варіант 2 (Дешевий): EventBridge Pipe читає \texttt{trades.fifo} \texttt{->} записує в S3 (або через Lambda).
     \item Glue crawler + Athena для SQL запитів по історії торгів.
     \item Місце для конфігів: \texttt{(place code here later)}.
 \end{enumerate}
