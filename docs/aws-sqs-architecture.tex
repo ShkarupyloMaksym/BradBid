@@ -17,7 +17,7 @@
 \textbf{Учасник A (Інфраструктура + Frontend):}
 \begin{itemize}
     \item Створення базової інфраструктури AWS (VPC Public-only, SG).
-    \item Налаштування CloudFront, Route~53.
+    \item Налаштування CloudFront, Route 53.
     \item Конфігурація Cognito User Pool та App Client.
     \item Розробка та деплой SPA/PWA.
     \item Моніторинг та керування витратами.
@@ -82,7 +82,7 @@
     \item Створити WebSocket API для стрімінгу котирувань.
     \item Підключити Cognito Authorizer.
     \item Створити CloudFront для SPA.
-    \item \textit{(Видалено WAF для економії бюджету)}.
+    \item WAF опущено для економії бюджету.
     \item Місце для конфігів: \texttt{(place code here later)}.
 \end{enumerate}
 
@@ -119,7 +119,7 @@
     \item Тригер: API Gateway (REST \texttt{POST /orders}).
     \item Валідація JSON.
     \item Відправка повідомлення у \texttt{SQS: orders.fifo}.
-    \item Використання \texttt{MessageGroupId} = торгова пара (напр. \texttt{BTC\_USD}) для гарантії порядку.
+    \item Використання \texttt{MessageGroupId} = торгова пара (напр. \texttt{BTC-USD}) для гарантії порядку.
     \item Місце для коду: \texttt{(place code here later)}.
 \end{itemize}
 
