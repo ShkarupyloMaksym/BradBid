@@ -1,4 +1,4 @@
-# Terraform Destroy Workflow (Krок 11)
+# Terraform Destroy Workflow (Step 11)
 # Manual workflow to destroy all AWS resources to save costs
 
 name: Destroy Infrastructure
@@ -11,6 +11,9 @@ on:
         required: true
         type: string
 
+permissions:
+  contents: read
+
 env:
   AWS_REGION: eu-central-1
   TF_VERSION: "1.6.0"
@@ -20,6 +23,8 @@ jobs:
     name: Destroy AWS Resources
     runs-on: ubuntu-latest
     if: github.event.inputs.confirm == 'destroy'
+    permissions:
+      contents: read
     
     steps:
       - name: Checkout

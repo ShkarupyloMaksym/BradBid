@@ -46,16 +46,26 @@ def get_order_book_key(symbol: str, side: str) -> str:
 
 
 def add_order_to_book(order: dict) -> None:
-    """Add an order to the Redis order book."""
+    """
+    Add an order to the Redis order book.
+    
+    Note: Market orders should NOT be added to the order book.
+    They are executed immediately and any unfilled portion is cancelled.
+    """
+    if order.get('order_type') == 'market':
+        # Market orders are not stored in the book
+        return
+    
     r = get_redis_client()
     key = get_order_book_key(order['symbol'], order['side'])
     
     # For buy orders, higher price = higher priority (negative score)
     # For sell orders, lower price = higher priority (positive score)
+    price = float(order['price'])
     if order['side'] == 'buy':
-        score = -float(order['price']) if order['price'] else float('inf')
+        score = -price  # Negative so higher prices sort first
     else:
-        score = float(order['price']) if order['price'] else 0
+        score = price   # Positive so lower prices sort first
     
     # Store order in sorted set with price as score
     r.zadd(key, {json.dumps(order): score})

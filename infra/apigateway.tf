@@ -10,6 +10,8 @@ resource "aws_apigatewayv2_api" "http_api" {
   name          = "exchange-http-api"
   protocol_type = "HTTP"
   
+  # Note: For production, restrict allow_origins to specific domains
+  # Using '*' for MVP/development - update before production deployment
   cors_configuration {
     allow_origins = ["*"]
     allow_methods = ["GET", "POST", "PUT", "DELETE", "OPTIONS"]

@@ -1,5 +1,5 @@
 #!/bin/bash
-# LocalStack Setup Script (Krок 12)
+# LocalStack Setup Script (Step 12)
 # Creates AWS resources in LocalStack for local development
 
 set -e

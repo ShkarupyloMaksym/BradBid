@@ -2,12 +2,22 @@
 
 let websocket = null;
 let authToken = null;
+let reconnectAttempts = 0;
+const MAX_RECONNECT_ATTEMPTS = 10;
+const BASE_RECONNECT_DELAY = 1000; // 1 second
 
 // Initialize the application
 document.addEventListener('DOMContentLoaded', () => {
     initializeWebSocket();
     loadMockOrderBook();
 });
+
+// Calculate reconnection delay with exponential backoff and jitter
+function getReconnectDelay() {
+    const exponentialDelay = Math.min(BASE_RECONNECT_DELAY * Math.pow(2, reconnectAttempts), 30000);
+    const jitter = Math.random() * 1000; // Add up to 1 second of random jitter
+    return exponentialDelay + jitter;
+}
 
 // WebSocket Connection
 function initializeWebSocket() {
@@ -17,6 +27,7 @@ function initializeWebSocket() {
         websocket.onopen = () => {
             console.log('WebSocket connected');
             updateConnectionStatus(true);
+            reconnectAttempts = 0; // Reset on successful connection
             
             // Subscribe to all trading pairs
             websocket.send(JSON.stringify({
@@ -34,8 +45,16 @@ function initializeWebSocket() {
             console.log('WebSocket disconnected');
             updateConnectionStatus(false);
             
-            // Attempt reconnection after 5 seconds
-            setTimeout(initializeWebSocket, 5000);
+            // Attempt reconnection with exponential backoff
+            if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+                const delay = getReconnectDelay();
+                console.log(`Reconnecting in ${Math.round(delay / 1000)}s (attempt ${reconnectAttempts + 1}/${MAX_RECONNECT_ATTEMPTS})`);
+                reconnectAttempts++;
+                setTimeout(initializeWebSocket, delay);
+            } else {
+                console.log('Max reconnection attempts reached. Please refresh the page.');
+                showNotification('Connection lost. Please refresh the page.', 'error');
+            }
         };
         
         websocket.onerror = (error) => {
