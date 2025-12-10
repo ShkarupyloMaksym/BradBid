@@ -21,9 +21,71 @@ resource "aws_iam_role" "lambda_role" {
   })
 }
 
-resource "aws_iam_role_policy_attachment" "lambda_admin" {
+resource "aws_iam_role_policy_attachment" "lambda_basic" {
   role       = aws_iam_role.lambda_role.name
-  policy_arn = "arn:aws:iam::aws:policy/AdministratorAccess"
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role_policy_attachment" "lambda_vpc" {
+  role       = aws_iam_role.lambda_role.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+}
+
+resource "aws_iam_role_policy" "lambda_policy" {
+  name = "exchange_lambda_policy"
+  role = aws_iam_role.lambda_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "sqs:SendMessage",
+          "sqs:ReceiveMessage",
+          "sqs:DeleteMessage",
+          "sqs:GetQueueAttributes"
+        ]
+        Resource = [
+          aws_sqs_queue.orders_queue.arn,
+          aws_sqs_queue.trades_queue.arn
+        ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "dynamodb:PutItem",
+          "dynamodb:GetItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:DeleteItem",
+          "dynamodb:Query",
+          "dynamodb:Scan"
+        ]
+        Resource = [
+          aws_dynamodb_table.orders.arn,
+          aws_dynamodb_table.trades.arn,
+          aws_dynamodb_table.ws_connections.arn
+        ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "firehose:PutRecord",
+          "firehose:PutRecordBatch"
+        ]
+        Resource = [
+          aws_kinesis_firehose_delivery_stream.trades_firehose.arn
+        ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "execute-api:ManageConnections"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
 }
 
 resource "aws_lambda_function" "ingest" {
@@ -62,10 +124,85 @@ resource "aws_lambda_function" "matcher" {
 
   environment {
     variables = {
-      REDIS_HOST = aws_elasticache_cluster.redis.cache_nodes[0].address
-      REDIS_PORT = "6379"
-      DYNAMO_TABLE = aws_dynamodb_table.trades.name
+      REDIS_HOST       = aws_elasticache_cluster.redis.cache_nodes[0].address
+      REDIS_PORT       = "6379"
+      DYNAMO_TABLE     = aws_dynamodb_table.trades.name
       TRADES_QUEUE_URL = aws_sqs_queue.trades_queue.url
+      FIREHOSE_STREAM  = aws_kinesis_firehose_delivery_stream.trades_firehose.name
     }
   }
+}
+
+# SQS Trigger for Matcher Lambda (Krок 7)
+resource "aws_lambda_event_source_mapping" "orders_sqs_trigger" {
+  event_source_arn = aws_sqs_queue.orders_queue.arn
+  function_name    = aws_lambda_function.matcher.arn
+  batch_size       = 1  # For MVP, process one order at a time
+  enabled          = true
+}
+
+# =============================================================================
+# WebSocket Handler Lambda (Krок 8)
+# Handles WebSocket connections and subscriptions
+# =============================================================================
+resource "aws_lambda_function" "ws_handler" {
+  filename         = data.archive_file.dummy_zip.output_path
+  function_name    = "ExchangeWSHandler"
+  role             = aws_iam_role.lambda_role.arn
+  handler          = "lambda_function.lambda_handler"
+  runtime          = "python3.9"
+  source_code_hash = data.archive_file.dummy_zip.output_base64sha256
+  timeout          = 30
+
+  environment {
+    variables = {
+      CONNECTIONS_TABLE = aws_dynamodb_table.ws_connections.name
+    }
+  }
+}
+
+# DynamoDB table for WebSocket connections
+resource "aws_dynamodb_table" "ws_connections" {
+  name         = "WSConnections"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "ConnectionId"
+  
+  attribute {
+    name = "ConnectionId"
+    type = "S"
+  }
+
+  ttl {
+    attribute_name = "TTL"
+    enabled        = true
+  }
+}
+
+# =============================================================================
+# Trade Broadcaster Lambda (Krок 8)
+# Listens to trades.fifo and broadcasts updates to WebSocket clients
+# =============================================================================
+resource "aws_lambda_function" "trade_broadcaster" {
+  filename         = data.archive_file.dummy_zip.output_path
+  function_name    = "ExchangeTradeBroadcaster"
+  role             = aws_iam_role.lambda_role.arn
+  handler          = "lambda_function.lambda_handler"
+  runtime          = "python3.9"
+  source_code_hash = data.archive_file.dummy_zip.output_base64sha256
+  timeout          = 30
+
+  environment {
+    variables = {
+      CONNECTIONS_TABLE = aws_dynamodb_table.ws_connections.name
+      WEBSOCKET_API_ENDPOINT = "https://${aws_apigatewayv2_api.websocket_api.id}.execute-api.${var.aws_region}.amazonaws.com/${aws_apigatewayv2_stage.websocket_stage.name}"
+    }
+  }
+}
+
+# SQS Trigger for Trade Broadcaster Lambda
+resource "aws_lambda_event_source_mapping" "trades_sqs_trigger" {
+  event_source_arn = aws_sqs_queue.trades_queue.arn
+  function_name    = aws_lambda_function.trade_broadcaster.arn
+  batch_size       = 10
+  enabled          = true
 }
