@@ -31,13 +31,9 @@ resource "aws_iam_role_policy_attachment" "lambda_vpc" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
 }
 
-resource "aws_iam_role_policy" "lambda_policy" {
-  name = "exchange_lambda_policy"
-  role = aws_iam_role.lambda_role.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
+locals {
+  lambda_policy_statements = concat(
+    [
       {
         Effect = "Allow"
         Action = [
@@ -70,21 +66,33 @@ resource "aws_iam_role_policy" "lambda_policy" {
       {
         Effect = "Allow"
         Action = [
-          "firehose:PutRecord",
-          "firehose:PutRecordBatch"
-        ]
-        Resource = [
-          aws_kinesis_firehose_delivery_stream.trades_firehose.arn
-        ]
-      },
-      {
-        Effect = "Allow"
-        Action = [
           "execute-api:ManageConnections"
         ]
         Resource = "*"
       }
-    ]
+    ],
+    var.enable_firehose ? [
+      {
+        Effect = "Allow"
+        Action = [
+          "firehose:PutRecord",
+          "firehose:PutRecordBatch"
+        ]
+        Resource = [
+          aws_kinesis_firehose_delivery_stream.trades_firehose[0].arn
+        ]
+      }
+    ] : []
+  )
+}
+
+resource "aws_iam_role_policy" "lambda_policy" {
+  name = "exchange_lambda_policy"
+  role = aws_iam_role.lambda_role.id
+
+  policy = jsonencode({
+    Version   = "2012-10-17"
+    Statement = local.lambda_policy_statements
   })
 }
 
@@ -93,18 +101,23 @@ resource "aws_lambda_function" "ingest" {
   function_name    = "ExchangeIngest"
   role             = aws_iam_role.lambda_role.arn
   handler          = "lambda_function.lambda_handler"
-  runtime          = "python3.9"
+  runtime          = "python3.11"
+  memory_size      = 256
+  timeout          = 15
   source_code_hash = data.archive_file.dummy_zip.output_base64sha256
-
-  vpc_config {
-    subnet_ids         = [aws_subnet.public_1.id, aws_subnet.public_2.id]
-    security_group_ids = [aws_security_group.lambda_sg.id]
-  }
 
   environment {
     variables = {
       ORDERS_QUEUE_URL = aws_sqs_queue.orders_queue.url
     }
+  }
+
+  lifecycle {
+    ignore_changes = [
+      source_code_hash,
+      filename,
+      vpc_config
+    ]
   }
 }
 
@@ -113,9 +126,10 @@ resource "aws_lambda_function" "matcher" {
   function_name    = "ExchangeMatcher"
   role             = aws_iam_role.lambda_role.arn
   handler          = "lambda_function.lambda_handler"
-  runtime          = "python3.9"
+  runtime          = "python3.11"
+  memory_size      = 512
+  timeout          = 60
   source_code_hash = data.archive_file.dummy_zip.output_base64sha256
-  timeout          = 30 
 
   vpc_config {
     subnet_ids         = [aws_subnet.public_1.id, aws_subnet.public_2.id]
@@ -124,12 +138,19 @@ resource "aws_lambda_function" "matcher" {
 
   environment {
     variables = {
-      REDIS_HOST       = aws_elasticache_cluster.redis.cache_nodes[0].address
-      REDIS_PORT       = "6379"
+      REDIS_HOST       = aws_elasticache_replication_group.redis.primary_endpoint_address
+      REDIS_PORT       = tostring(aws_elasticache_replication_group.redis.port)
       DYNAMO_TABLE     = aws_dynamodb_table.trades.name
       TRADES_QUEUE_URL = aws_sqs_queue.trades_queue.url
-      FIREHOSE_STREAM  = aws_kinesis_firehose_delivery_stream.trades_firehose.name
+      FIREHOSE_STREAM  = var.enable_firehose ? aws_kinesis_firehose_delivery_stream.trades_firehose[0].name : ""
     }
+  }
+
+  lifecycle {
+    ignore_changes = [
+      source_code_hash,
+      filename
+    ]
   }
 }
 

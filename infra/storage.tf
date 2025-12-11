@@ -29,6 +29,7 @@ resource "aws_sqs_queue" "trades_queue" {
   name                        = "trades.fifo"
   fifo_queue                  = true
   content_based_deduplication = true
+  visibility_timeout_seconds  = 30
 }
 
 # =============================================================================
@@ -49,6 +50,10 @@ resource "aws_s3_bucket_lifecycle_configuration" "analytics_lifecycle" {
   rule {
     id     = "transition-to-glacier"
     status = "Enabled"
+
+    filter {
+      # Apply to all objects in the bucket
+    }
 
     transition {
       days          = 30

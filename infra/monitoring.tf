@@ -207,10 +207,10 @@ resource "aws_cloudwatch_dashboard" "exchange_dashboard" {
           title  = "Redis Cache Metrics"
           region = var.aws_region
           metrics = [
-            ["AWS/ElastiCache", "CPUUtilization", "CacheClusterId", aws_elasticache_cluster.redis.cluster_id],
-            ["AWS/ElastiCache", "CurrConnections", "CacheClusterId", aws_elasticache_cluster.redis.cluster_id],
-            ["AWS/ElastiCache", "CacheHits", "CacheClusterId", aws_elasticache_cluster.redis.cluster_id],
-            ["AWS/ElastiCache", "CacheMisses", "CacheClusterId", aws_elasticache_cluster.redis.cluster_id]
+            ["AWS/ElastiCache", "CPUUtilization", "ReplicationGroupId", aws_elasticache_replication_group.redis.replication_group_id],
+            ["AWS/ElastiCache", "CurrConnections", "ReplicationGroupId", aws_elasticache_replication_group.redis.replication_group_id],
+            ["AWS/ElastiCache", "CacheHits", "ReplicationGroupId", aws_elasticache_replication_group.redis.replication_group_id],
+            ["AWS/ElastiCache", "CacheMisses", "ReplicationGroupId", aws_elasticache_replication_group.redis.replication_group_id]
           ]
           period = 60
           stat   = "Average"

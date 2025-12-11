@@ -7,11 +7,12 @@
 # Kinesis Firehose for streaming trade data to S3
 # -----------------------------------------------------------------------------
 resource "aws_kinesis_firehose_delivery_stream" "trades_firehose" {
+  count       = var.enable_firehose ? 1 : 0
   name        = "exchange-trades-firehose"
   destination = "extended_s3"
 
   extended_s3_configuration {
-    role_arn           = aws_iam_role.firehose_role.arn
+    role_arn           = aws_iam_role.firehose_role[0].arn
     bucket_arn         = aws_s3_bucket.analytics_bucket.arn
     prefix             = "trades/year=!{timestamp:yyyy}/month=!{timestamp:MM}/day=!{timestamp:dd}/"
     error_output_prefix = "errors/!{firehose:error-output-type}/year=!{timestamp:yyyy}/month=!{timestamp:MM}/day=!{timestamp:dd}/"
@@ -21,20 +22,22 @@ resource "aws_kinesis_firehose_delivery_stream" "trades_firehose" {
 
     cloudwatch_logging_options {
       enabled         = true
-      log_group_name  = aws_cloudwatch_log_group.firehose_logs.name
+      log_group_name  = aws_cloudwatch_log_group.firehose_logs[0].name
       log_stream_name = "S3Delivery"
     }
   }
 }
 
 resource "aws_cloudwatch_log_group" "firehose_logs" {
+  count             = var.enable_firehose ? 1 : 0
   name              = "/aws/kinesisfirehose/exchange-trades"
   retention_in_days = 7
 }
 
 # IAM Role for Firehose
 resource "aws_iam_role" "firehose_role" {
-  name = "exchange_firehose_role"
+  count = var.enable_firehose ? 1 : 0
+  name  = "exchange_firehose_role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -47,8 +50,9 @@ resource "aws_iam_role" "firehose_role" {
 }
 
 resource "aws_iam_role_policy" "firehose_policy" {
-  name = "firehose_s3_access"
-  role = aws_iam_role.firehose_role.id
+  count = var.enable_firehose ? 1 : 0
+  name  = "firehose_s3_access"
+  role  = aws_iam_role.firehose_role[0].id
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -73,7 +77,7 @@ resource "aws_iam_role_policy" "firehose_policy" {
         Action = [
           "logs:PutLogEvents"
         ]
-        Resource = "${aws_cloudwatch_log_group.firehose_logs.arn}:*"
+        Resource = "${aws_cloudwatch_log_group.firehose_logs[0].arn}:*"
       }
     ]
   })
@@ -165,12 +169,12 @@ resource "aws_athena_workgroup" "trades_workgroup" {
 # Outputs
 output "firehose_delivery_stream_name" {
   description = "Name of the Firehose delivery stream"
-  value       = aws_kinesis_firehose_delivery_stream.trades_firehose.name
+  value       = var.enable_firehose ? aws_kinesis_firehose_delivery_stream.trades_firehose[0].name : null
 }
 
 output "firehose_delivery_stream_arn" {
   description = "ARN of the Firehose delivery stream"
-  value       = aws_kinesis_firehose_delivery_stream.trades_firehose.arn
+  value       = var.enable_firehose ? aws_kinesis_firehose_delivery_stream.trades_firehose[0].arn : null
 }
 
 output "glue_database_name" {
