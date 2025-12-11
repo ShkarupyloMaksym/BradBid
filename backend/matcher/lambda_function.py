@@ -1,339 +1,254 @@
 """
-Matcher Lambda Function
-Processes orders from Kinesis, maintains order book in Redis, and matches trades
+Matcher Lambda (Krок 7)
+Processes orders from SQS orders.fifo queue
+Implements order book matching logic using Redis
+Saves trades to DynamoDB and sends to trades.fifo
 """
 import json
 import os
-import uuid
-import time
-from typing import Dict, Any, List, Optional
 import boto3
+import uuid
+from datetime import datetime
+from decimal import Decimal
 import redis
-from aws_xray_sdk.core import xray_recorder
-from aws_xray_sdk.core import patch_all
 
-# Patch boto3 for X-Ray tracing
-patch_all()
-
-# Initialize AWS clients
-kinesis_client = boto3.client('kinesis')
-dynamodb_client = boto3.client('dynamodb')
-secrets_client = boto3.client('secretsmanager')
+# AWS clients
+dynamodb = boto3.resource('dynamodb')
+sqs = boto3.client('sqs')
+firehose = boto3.client('firehose')
 
 # Environment variables
-REDIS_SECRET_ARN = os.environ.get('REDIS_SECRET_ARN')
-REDIS_ENDPOINT = os.environ.get('REDIS_ENDPOINT')
-REDIS_PORT = int(os.environ.get('REDIS_PORT', '6379'))
-DYNAMODB_TABLE = os.environ.get('DYNAMODB_TRADES_TABLE')
-KINESIS_TRADES_STREAM = os.environ.get('KINESIS_TRADES_STREAM')
+REDIS_HOST = os.environ.get('REDIS_HOST')
+REDIS_PORT = int(os.environ.get('REDIS_PORT', 6379))
+DYNAMO_TABLE = os.environ.get('DYNAMO_TABLE')
+TRADES_QUEUE_URL = os.environ.get('TRADES_QUEUE_URL')
+FIREHOSE_STREAM = os.environ.get('FIREHOSE_STREAM', '')
 
-# Redis connection (lazy initialization)
-redis_client: Optional[redis.Redis] = None
+# Redis connection
+redis_client = None
 
 
-def get_redis_client() -> redis.Redis:
-    """Get or create Redis client with authentication"""
+def get_redis_client():
+    """Get or create Redis connection."""
     global redis_client
-    
-    if redis_client is not None:
-        return redis_client
-    
-    # Get auth token from Secrets Manager
-    try:
-        secret_response = secrets_client.get_secret_value(SecretId=REDIS_SECRET_ARN)
-        secret_data = json.loads(secret_response['SecretString'])
-        auth_token = secret_data.get('auth_token', '')
-    except Exception as e:
-        print(f"Failed to get Redis auth token: {str(e)}")
-        auth_token = None
-    
-    # Connect to Redis
-    redis_client = redis.Redis(
-        host=REDIS_ENDPOINT,
-        port=REDIS_PORT,
-        password=auth_token if auth_token else None,
-        decode_responses=True,
-        socket_connect_timeout=5,
-        socket_timeout=5
-    )
-    
-    # Test connection
-    try:
-        redis_client.ping()
-    except Exception as e:
-        print(f"Failed to connect to Redis: {str(e)}")
-        raise
-    
+    if redis_client is None:
+        redis_client = redis.Redis(
+            host=REDIS_HOST,
+            port=REDIS_PORT,
+            decode_responses=True
+        )
     return redis_client
 
 
 def get_order_book_key(symbol: str, side: str) -> str:
-    """Get Redis key for order book"""
+    """Generate Redis key for order book."""
     return f"orderbook:{symbol}:{side}"
 
 
-def add_order_to_book(redis_client: redis.Redis, order: Dict[str, Any]) -> None:
+def add_order_to_book(order: dict) -> None:
     """
-    Add order to order book in Redis
-    Uses sorted set for price-time priority matching
+    Add an order to the Redis order book.
+    
+    Note: Market orders should NOT be added to the order book.
+    They are executed immediately and any unfilled portion is cancelled.
     """
-    symbol = order['symbol']
-    side = order['side']
+    if order.get('order_type') == 'market':
+        # Market orders are not stored in the book
+        return
+    
+    r = get_redis_client()
+    key = get_order_book_key(order['symbol'], order['side'])
+    
+    # For buy orders, higher price = higher priority (negative score)
+    # For sell orders, lower price = higher priority (positive score)
     price = float(order['price'])
-    order_id = order['orderId']
-    quantity = float(order['quantity'])
-    timestamp = order.get('timestamp', int(time.time() * 1000))
+    if order['side'] == 'buy':
+        score = -price  # Negative so higher prices sort first
+    else:
+        score = price   # Positive so lower prices sort first
     
-    # Redis key for this side of the order book
-    key = get_order_book_key(symbol, side)
+    # Store order in sorted set with price as score
+    r.zadd(key, {json.dumps(order): score})
+
+
+def get_matching_orders(order: dict) -> list:
+    """Get orders that can match with the incoming order."""
+    r = get_redis_client()
     
-    # Use sorted set: score = price (for BUY: negative for descending, for SELL: positive for ascending)
-    # For price-time priority: score = price * 1e10 + timestamp
-    # This ensures orders are sorted by price first, then by time
+    # For buy orders, look at sell book; for sell orders, look at buy book
+    opposite_side = 'sell' if order['side'] == 'buy' else 'buy'
+    key = get_order_book_key(order['symbol'], opposite_side)
     
-    if side == 'BUY':
-        # Higher prices first (negative for descending order)
-        score = -price * 1e10 + timestamp
-    else:  # SELL
-        # Lower prices first (positive for ascending order)
-        score = price * 1e10 + timestamp
+    # Get all orders from the opposite side sorted by price
+    orders = r.zrange(key, 0, -1, withscores=True)
     
-    # Store order data as hash
-    order_data = {
-        'orderId': order_id,
-        'symbol': symbol,
-        'side': side,
-        'price': str(price),
-        'quantity': str(quantity),
-        'timestamp': str(timestamp)
+    matching_orders = []
+    for order_json, score in orders:
+        book_order = json.loads(order_json)
+        
+        # Check price match for limit orders
+        if order['order_type'] == 'market':
+            # Market orders match any price
+            matching_orders.append(book_order)
+        elif order['order_type'] == 'limit':
+            # Limit orders match if price is acceptable
+            if order['side'] == 'buy' and float(book_order['price']) <= float(order['price']):
+                matching_orders.append(book_order)
+            elif order['side'] == 'sell' and float(book_order['price']) >= float(order['price']):
+                matching_orders.append(book_order)
+    
+    return matching_orders
+
+
+def remove_order_from_book(order: dict) -> None:
+    """Remove an order from the Redis order book."""
+    r = get_redis_client()
+    key = get_order_book_key(order['symbol'], order['side'])
+    r.zrem(key, json.dumps(order))
+
+
+def execute_trade(buy_order: dict, sell_order: dict, quantity: float, price: float) -> dict:
+    """Create a trade record."""
+    trade = {
+        'trade_id': str(uuid.uuid4()),
+        'symbol': buy_order['symbol'],
+        'buy_order_id': buy_order['order_id'],
+        'sell_order_id': sell_order['order_id'],
+        'buyer_id': buy_order['user_id'],
+        'seller_id': sell_order['user_id'],
+        'quantity': quantity,
+        'price': price,
+        'timestamp': datetime.utcnow().isoformat(),
+        'total_value': quantity * price
+    }
+    return trade
+
+
+def save_trade_to_dynamodb(trade: dict) -> None:
+    """Save trade to DynamoDB."""
+    table = dynamodb.Table(DYNAMO_TABLE)
+    
+    # Convert floats to Decimal for DynamoDB
+    item = {
+        'TradeId': trade['trade_id'],
+        'Symbol': trade['symbol'],
+        'BuyOrderId': trade['buy_order_id'],
+        'SellOrderId': trade['sell_order_id'],
+        'BuyerId': trade['buyer_id'],
+        'SellerId': trade['seller_id'],
+        'Quantity': Decimal(str(trade['quantity'])),
+        'Price': Decimal(str(trade['price'])),
+        'TotalValue': Decimal(str(trade['total_value'])),
+        'Timestamp': trade['timestamp']
     }
     
-    # Add to sorted set (score for ordering)
-    redis_client.zadd(key, {order_id: score})
-    
-    # Store order details in hash
-    redis_client.hset(f"order:{order_id}", mapping=order_data)
-    
-    # Set expiration (24 hours)
-    redis_client.expire(f"order:{order_id}", 86400)
+    table.put_item(Item=item)
 
 
-def get_best_order(redis_client: redis.Redis, symbol: str, side: str) -> Optional[Dict[str, Any]]:
-    """
-    Get the best order from the order book
-    For BUY: highest price (first in sorted set)
-    For SELL: lowest price (first in sorted set)
-    """
-    key = get_order_book_key(symbol, side)
-    
-    # Get first order (best price)
-    order_ids = redis_client.zrange(key, 0, 0)
-    
-    if not order_ids:
-        return None
-    
-    order_id = order_ids[0]
-    
-    # Get order details
-    order_data = redis_client.hgetall(f"order:{order_id}")
-    
-    if not order_data:
-        # Clean up orphaned entry
-        redis_client.zrem(key, order_id)
-        return None
-    
-    return order_data
+def send_trade_to_queue(trade: dict) -> None:
+    """Send trade to SQS trades.fifo queue for broadcasting."""
+    sqs.send_message(
+        QueueUrl=TRADES_QUEUE_URL,
+        MessageBody=json.dumps(trade),
+        MessageGroupId=trade['symbol']
+    )
 
 
-def remove_order_from_book(redis_client: redis.Redis, order_id: str, symbol: str, side: str) -> None:
-    """Remove order from order book"""
-    key = get_order_book_key(symbol, side)
-    redis_client.zrem(key, order_id)
-    redis_client.delete(f"order:{order_id}")
+def send_trade_to_firehose(trade: dict) -> None:
+    """Send trade to Firehose for analytics."""
+    if FIREHOSE_STREAM:
+        firehose.put_record(
+            DeliveryStreamName=FIREHOSE_STREAM,
+            Record={'Data': json.dumps(trade) + '\n'}
+        )
 
 
-def update_order_quantity(redis_client: redis.Redis, order_id: str, remaining_quantity: float) -> None:
-    """Update remaining quantity for an order"""
-    redis_client.hset(f"order:{order_id}", 'quantity', str(remaining_quantity))
-
-
-def match_orders(redis_client: redis.Redis, new_order: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """
-    Match a new order against the order book
-    Returns list of trades executed
-    """
+def process_order(order: dict) -> list:
+    """Process an incoming order and attempt to match it."""
     trades = []
-    symbol = new_order['symbol']
-    side = new_order['side']
-    opposite_side = 'SELL' if side == 'BUY' else 'BUY'
+    remaining_quantity = float(order['quantity'])
     
-    remaining_quantity = float(new_order['quantity'])
-    new_order_price = float(new_order['price'])
+    # Get matching orders from the order book
+    matching_orders = get_matching_orders(order)
     
-    # Check for idempotency - use order ID as key
-    idempotency_key = f"processed:{new_order['orderId']}"
-    if redis_client.exists(idempotency_key):
-        print(f"Order {new_order['orderId']} already processed (idempotency check)")
-        return trades
-    
-    # Mark as processed (expire after 1 hour)
-    redis_client.setex(idempotency_key, 3600, "1")
-    
-    # Try to match while there's remaining quantity
-    while remaining_quantity > 0:
-        # Get best matching order from opposite side
-        best_order = get_best_order(redis_client, symbol, opposite_side)
-        
-        if not best_order:
-            # No more matches, add remaining to order book
-            if remaining_quantity > 0:
-                new_order['quantity'] = remaining_quantity
-                add_order_to_book(redis_client, new_order)
+    for match_order in matching_orders:
+        if remaining_quantity <= 0:
             break
         
-        best_price = float(best_order['price'])
-        best_quantity = float(best_order['quantity'])
-        best_order_id = best_order['orderId']
+        # Determine trade quantity (minimum of both orders)
+        match_quantity = float(match_order['quantity'])
+        trade_quantity = min(remaining_quantity, match_quantity)
         
-        # Check if prices match
-        if side == 'BUY' and new_order_price < best_price:
-            # Buy order price too low
-            break
-        if side == 'SELL' and new_order_price > best_price:
-            # Sell order price too high
-            break
+        # Determine trade price (maker's price for limit orders)
+        trade_price = float(match_order['price']) if match_order.get('price') else float(order.get('price', 0))
         
-        # Match at the best order's price (price-time priority)
-        trade_price = best_price
-        trade_quantity = min(remaining_quantity, best_quantity)
+        # Determine buy and sell orders
+        if order['side'] == 'buy':
+            buy_order, sell_order = order, match_order
+        else:
+            buy_order, sell_order = match_order, order
         
-        # Create trade
-        trade = {
-            'tradeId': str(uuid.uuid4()),
-            'symbol': symbol,
-            'buyOrderId': new_order['orderId'] if side == 'BUY' else best_order_id,
-            'sellOrderId': new_order['orderId'] if side == 'SELL' else best_order_id,
-            'price': trade_price,
-            'quantity': trade_quantity,
-            'timestamp': int(time.time() * 1000)
-        }
+        # Execute trade
+        trade = execute_trade(buy_order, sell_order, trade_quantity, trade_price)
         trades.append(trade)
         
-        # Update quantities
+        # Update remaining quantities
         remaining_quantity -= trade_quantity
-        best_quantity -= trade_quantity
+        match_order['quantity'] = match_quantity - trade_quantity
         
-        if best_quantity <= 0:
-            # Best order fully filled, remove it
-            remove_order_from_book(redis_client, best_order_id, symbol, opposite_side)
-        else:
-            # Update best order quantity
-            update_order_quantity(redis_client, best_order_id, best_quantity)
+        # Remove or update the matched order in the book
+        remove_order_from_book(match_order)
+        if match_order['quantity'] > 0:
+            add_order_to_book(match_order)
+    
+    # If order not fully filled, add remainder to order book (for limit orders)
+    if remaining_quantity > 0 and order['order_type'] == 'limit':
+        order['quantity'] = remaining_quantity
+        order['status'] = 'partial' if trades else 'pending'
+        add_order_to_book(order)
     
     return trades
 
 
-@xray_recorder.capture('process_order')
-def process_order(redis_client: redis.Redis, order: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Process a single order and return trades"""
-    try:
-        trades = match_orders(redis_client, order)
-        return trades
-    except Exception as e:
-        print(f"Error processing order {order.get('orderId')}: {str(e)}")
-        raise
-
-
-@xray_recorder.capture('save_trade')
-def save_trade_to_dynamodb(trade: Dict[str, Any]) -> None:
-    """Save trade to DynamoDB"""
-    try:
-        dynamodb_client.put_item(
-            TableName=DYNAMODB_TABLE,
-            Item={
-                'TradeId': {'S': trade['tradeId']},
-                'Symbol': {'S': trade['symbol']},
-                'BuyOrderId': {'S': trade['buyOrderId']},
-                'SellOrderId': {'S': trade['sellOrderId']},
-                'Price': {'N': str(trade['price'])},
-                'Quantity': {'N': str(trade['quantity'])},
-                'Timestamp': {'N': str(trade['timestamp'])}
-            }
-        )
-    except Exception as e:
-        print(f"Failed to save trade to DynamoDB: {str(e)}")
-        raise
-
-
-@xray_recorder.capture('publish_trade')
-def publish_trade_to_kinesis(trade: Dict[str, Any]) -> None:
-    """Publish trade event to Kinesis"""
-    try:
-        partition_key = f"{trade['symbol']}-{trade['tradeId']}"
-        kinesis_client.put_record(
-            StreamName=KINESIS_TRADES_STREAM,
-            Data=json.dumps(trade),
-            PartitionKey=partition_key
-        )
-    except Exception as e:
-        print(f"Failed to publish trade to Kinesis: {str(e)}")
-        raise
-
-
-@xray_recorder.capture('matcher_handler')
-def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
+def lambda_handler(event, context):
     """
-    Lambda handler for order matching
-    Triggered by Kinesis event source mapping
-    """
-    try:
-        # Get Redis client
-        redis_client = get_redis_client()
-        
-        # Process Kinesis records
-        batch_item_failures = []
-        all_trades = []
-        
-        for record in event.get('Records', []):
-            try:
-                # Parse Kinesis record
-                kinesis_data = record.get('kinesis', {})
-                order_data = json.loads(kinesis_data.get('data', '{}'))
-                sequence_number = kinesis_data.get('sequenceNumber')
-                
-                # Process order and get trades
-                trades = process_order(redis_client, order_data)
-                
-                # Process each trade
-                for trade in trades:
-                    # Save to DynamoDB
-                    save_trade_to_dynamodb(trade)
-                    
-                    # Publish to Kinesis
-                    publish_trade_to_kinesis(trade)
-                    
-                    all_trades.append(trade)
-                
-            except Exception as e:
-                print(f"Error processing record: {str(e)}")
-                # Report batch item failure for partial batch failure handling
-                batch_item_failures.append({
-                    'itemIdentifier': record.get('kinesis', {}).get('sequenceNumber', '')
-                })
-        
-        # Return batch item failures if any
-        if batch_item_failures:
-            return {
-                'batchItemFailures': batch_item_failures
-            }
-        
-        return {
-            'statusCode': 200,
-            'tradesProcessed': len(all_trades)
-        }
+    Handle incoming orders from SQS orders.fifo queue.
     
-    except Exception as e:
-        print(f"Fatal error in matcher: {str(e)}")
-        # Re-raise to trigger retry
-        raise
-
+    Expected event structure (SQS):
+    {
+        "Records": [
+            {
+                "body": "{\"order_id\": \"...\", \"symbol\": \"BTC-USD\", ...}"
+            }
+        ]
+    }
+    """
+    processed_trades = []
+    
+    for record in event.get('Records', []):
+        try:
+            order = json.loads(record['body'])
+            print(f"Processing order: {order['order_id']}")
+            
+            # Process order and get any resulting trades
+            trades = process_order(order)
+            
+            # Save and broadcast trades
+            for trade in trades:
+                save_trade_to_dynamodb(trade)
+                send_trade_to_queue(trade)
+                send_trade_to_firehose(trade)
+                processed_trades.append(trade)
+                print(f"Trade executed: {trade['trade_id']}")
+            
+        except Exception as e:
+            print(f"Error processing order: {str(e)}")
+            raise  # Re-raise to trigger SQS retry
+    
+    return {
+        'statusCode': 200,
+        'body': json.dumps({
+            'message': f"Processed {len(event.get('Records', []))} orders",
+            'trades_executed': len(processed_trades)
+        })
+    }

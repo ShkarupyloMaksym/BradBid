@@ -1,25 +1,13 @@
-# =============================================================================
-# LAMBDA FUNCTIONS
-# Cost: Free tier: 1M requests/month, 400K GB-seconds compute
-# =============================================================================
-
-# Archive Ingest Lambda code
-data "archive_file" "ingest_zip" {
+data "archive_file" "dummy_zip" {
   type        = "zip"
-  source_dir  = "${path.module}/../backend/ingest"
-  output_path = "${path.module}/ingest_lambda.zip"
-  excludes    = ["__pycache__", "*.pyc", ".pytest_cache"]
+  output_path = "${path.module}/dummy_payload.zip"
+  
+  source {
+    content  = "def lambda_handler(event, context): return 'Hello from Terraform'"
+    filename = "lambda_function.py"
+  }
 }
 
-# Archive Matcher Lambda code
-data "archive_file" "matcher_zip" {
-  type        = "zip"
-  source_dir  = "${path.module}/../backend/matcher"
-  output_path = "${path.module}/matcher_lambda.zip"
-  excludes    = ["__pycache__", "*.pyc", ".pytest_cache"]
-}
-
-# IAM Role for Lambda functions
 resource "aws_iam_role" "lambda_role" {
   name = "exchange_lambda_role"
 
@@ -33,31 +21,26 @@ resource "aws_iam_role" "lambda_role" {
   })
 }
 
-# Least-privilege IAM policy for Lambda functions
-resource "aws_iam_role_policy" "lambda_policy" {
-  name = "exchange_lambda_policy"
-  role = aws_iam_role.lambda_role.id
+resource "aws_iam_role_policy_attachment" "lambda_basic" {
+  role       = aws_iam_role.lambda_role.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
 
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Action = [
-          "logs:CreateLogGroup",
-          "logs:CreateLogStream",
-          "logs:PutLogEvents"
-        ]
-        Resource = "arn:aws:logs:${var.aws_region}:*:*"
-      },
+resource "aws_iam_role_policy_attachment" "lambda_vpc" {
+  role       = aws_iam_role.lambda_role.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+}
+
+locals {
+  lambda_policy_statements = concat(
+    [
       {
         Effect = "Allow"
         Action = [
           "sqs:SendMessage",
-          "sqs:GetQueueAttributes",
           "sqs:ReceiveMessage",
           "sqs:DeleteMessage",
-          "sqs:GetQueueUrl"
+          "sqs:GetQueueAttributes"
         ]
         Resource = [
           aws_sqs_queue.orders_queue.arn,
@@ -70,97 +53,84 @@ resource "aws_iam_role_policy" "lambda_policy" {
           "dynamodb:PutItem",
           "dynamodb:GetItem",
           "dynamodb:UpdateItem",
-          "dynamodb:Query"
+          "dynamodb:DeleteItem",
+          "dynamodb:Query",
+          "dynamodb:Scan"
         ]
         Resource = [
           aws_dynamodb_table.orders.arn,
-          aws_dynamodb_table.trades.arn
+          aws_dynamodb_table.trades.arn,
+          aws_dynamodb_table.ws_connections.arn
         ]
       },
       {
         Effect = "Allow"
         Action = [
-          "secretsmanager:GetSecretValue"
-        ]
-        Resource = aws_secretsmanager_secret.redis_auth.arn
-      },
-      {
-        Effect = "Allow"
-        Action = [
-          "ec2:CreateNetworkInterface",
-          "ec2:DescribeNetworkInterfaces",
-          "ec2:DeleteNetworkInterface"
-        ]
-        Resource = "*"
-      },
-      {
-        Effect = "Allow"
-        Action = [
-          "xray:PutTraceSegments",
-          "xray:PutTelemetryRecords"
+          "execute-api:ManageConnections"
         ]
         Resource = "*"
       }
-    ]
+    ],
+    var.enable_firehose ? [
+      {
+        Effect = "Allow"
+        Action = [
+          "firehose:PutRecord",
+          "firehose:PutRecordBatch"
+        ]
+        Resource = [
+          aws_kinesis_firehose_delivery_stream.trades_firehose[0].arn
+        ]
+      }
+    ] : []
+  )
+}
+
+resource "aws_iam_role_policy" "lambda_policy" {
+  name = "exchange_lambda_policy"
+  role = aws_iam_role.lambda_role.id
+
+  policy = jsonencode({
+    Version   = "2012-10-17"
+    Statement = local.lambda_policy_statements
   })
 }
 
-# Attach VPC execution role (for Lambda to access VPC resources)
-resource "aws_iam_role_policy_attachment" "lambda_vpc" {
-  role       = aws_iam_role.lambda_role.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
-}
-
-# Ingest Lambda - Validates and ingests orders
 resource "aws_lambda_function" "ingest" {
-  filename         = data.archive_file.ingest_zip.output_path
+  filename         = data.archive_file.dummy_zip.output_path
   function_name    = "ExchangeIngest"
   role             = aws_iam_role.lambda_role.arn
   handler          = "lambda_function.lambda_handler"
   runtime          = "python3.11"
+  memory_size      = 256
   timeout          = 15
-  memory_size      = 256  # Minimum for cost savings
-  source_code_hash = data.archive_file.ingest_zip.output_base64sha256
-
-  # X-Ray tracing enabled
-  tracing_config {
-    mode = "Active"
-  }
-
-  # No VPC config needed for Ingest (API Gateway doesn't require VPC)
-  # VPC config removed to reduce cold start time and costs
+  source_code_hash = data.archive_file.dummy_zip.output_base64sha256
 
   environment {
     variables = {
       ORDERS_QUEUE_URL = aws_sqs_queue.orders_queue.url
-      DYNAMODB_ORDERS_TABLE = aws_dynamodb_table.orders.name
-      AWS_XRAY_CONTEXT_MISSING = "LOG_ERROR"
     }
   }
 
-  depends_on = [
-    aws_iam_role_policy.lambda_policy,
-    aws_cloudwatch_log_group.ingest_lambda
-  ]
+  lifecycle {
+    ignore_changes = [
+      source_code_hash,
+      filename,
+      vpc_config
+    ]
+  }
 }
 
-# Matcher Lambda - Processes orders and matches trades
 resource "aws_lambda_function" "matcher" {
-  filename         = data.archive_file.matcher_zip.output_path
+  filename         = data.archive_file.dummy_zip.output_path
   function_name    = "ExchangeMatcher"
   role             = aws_iam_role.lambda_role.arn
   handler          = "lambda_function.lambda_handler"
   runtime          = "python3.11"
-  timeout          = 60  # Increased for Redis operations
-  memory_size      = 512  # More memory for order book operations
-  source_code_hash = data.archive_file.matcher_zip.output_base64sha256
+  memory_size      = 512
+  timeout          = 60
+  source_code_hash = data.archive_file.dummy_zip.output_base64sha256
 
-  # X-Ray tracing enabled
-  tracing_config {
-    mode = "Active"
-  }
-
-  # VPC config required for Redis access
   vpc_config {
     subnet_ids         = [aws_subnet.public_1.id, aws_subnet.public_2.id]
     security_group_ids = [aws_security_group.lambda_sg.id]
@@ -168,38 +138,92 @@ resource "aws_lambda_function" "matcher" {
 
   environment {
     variables = {
-      REDIS_SECRET_ARN = aws_secretsmanager_secret.redis_auth.arn
-      REDIS_ENDPOINT   = aws_elasticache_replication_group.redis.primary_endpoint_address
-      REDIS_PORT       = "6379"
-      DYNAMODB_TRADES_TABLE = aws_dynamodb_table.trades.name
-      TRADES_QUEUE_URL  = aws_sqs_queue.trades_queue.url
-      AWS_XRAY_CONTEXT_MISSING = "LOG_ERROR"
+      REDIS_HOST       = aws_elasticache_replication_group.redis.primary_endpoint_address
+      REDIS_PORT       = tostring(aws_elasticache_replication_group.redis.port)
+      DYNAMO_TABLE     = aws_dynamodb_table.trades.name
+      TRADES_QUEUE_URL = aws_sqs_queue.trades_queue.url
+      FIREHOSE_STREAM  = var.enable_firehose ? aws_kinesis_firehose_delivery_stream.trades_firehose[0].name : ""
     }
   }
 
-  depends_on = [
-    aws_iam_role_policy.lambda_policy,
-    aws_cloudwatch_log_group.matcher_lambda
-  ]
+  lifecycle {
+    ignore_changes = [
+      source_code_hash,
+      filename
+    ]
+  }
 }
 
-# CloudWatch Log Groups for Lambda functions
-resource "aws_cloudwatch_log_group" "ingest_lambda" {
-  name              = "/aws/lambda/ExchangeIngest"
-  retention_in_days = 7  # Keep logs for 7 days to save costs
-}
-
-resource "aws_cloudwatch_log_group" "matcher_lambda" {
-  name              = "/aws/lambda/ExchangeMatcher"
-  retention_in_days = 7  # Keep logs for 7 days to save costs
-}
-
-# Event Source Mapping: SQS Orders Queue -> Matcher Lambda
-resource "aws_lambda_event_source_mapping" "matcher_sqs" {
+# SQS Trigger for Matcher Lambda (Krок 7)
+resource "aws_lambda_event_source_mapping" "orders_sqs_trigger" {
   event_source_arn = aws_sqs_queue.orders_queue.arn
   function_name    = aws_lambda_function.matcher.arn
-  batch_size       = 10  # Process 10 messages per invocation (cost optimization)
+  batch_size       = 1  # For MVP, process one order at a time
+  enabled          = true
+}
 
-  # Error handling with partial batch responses
-  function_response_types = ["ReportBatchItemFailures"]
+# =============================================================================
+# WebSocket Handler Lambda (Krок 8)
+# Handles WebSocket connections and subscriptions
+# =============================================================================
+resource "aws_lambda_function" "ws_handler" {
+  filename         = data.archive_file.dummy_zip.output_path
+  function_name    = "ExchangeWSHandler"
+  role             = aws_iam_role.lambda_role.arn
+  handler          = "lambda_function.lambda_handler"
+  runtime          = "python3.9"
+  source_code_hash = data.archive_file.dummy_zip.output_base64sha256
+  timeout          = 30
+
+  environment {
+    variables = {
+      CONNECTIONS_TABLE = aws_dynamodb_table.ws_connections.name
+    }
+  }
+}
+
+# DynamoDB table for WebSocket connections
+resource "aws_dynamodb_table" "ws_connections" {
+  name         = "WSConnections"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "ConnectionId"
+  
+  attribute {
+    name = "ConnectionId"
+    type = "S"
+  }
+
+  ttl {
+    attribute_name = "TTL"
+    enabled        = true
+  }
+}
+
+# =============================================================================
+# Trade Broadcaster Lambda (Krок 8)
+# Listens to trades.fifo and broadcasts updates to WebSocket clients
+# =============================================================================
+resource "aws_lambda_function" "trade_broadcaster" {
+  filename         = data.archive_file.dummy_zip.output_path
+  function_name    = "ExchangeTradeBroadcaster"
+  role             = aws_iam_role.lambda_role.arn
+  handler          = "lambda_function.lambda_handler"
+  runtime          = "python3.9"
+  source_code_hash = data.archive_file.dummy_zip.output_base64sha256
+  timeout          = 30
+
+  environment {
+    variables = {
+      CONNECTIONS_TABLE = aws_dynamodb_table.ws_connections.name
+      WEBSOCKET_API_ENDPOINT = "https://${aws_apigatewayv2_api.websocket_api.id}.execute-api.${var.aws_region}.amazonaws.com/${aws_apigatewayv2_stage.websocket_stage.name}"
+    }
+  }
+}
+
+# SQS Trigger for Trade Broadcaster Lambda
+resource "aws_lambda_event_source_mapping" "trades_sqs_trigger" {
+  event_source_arn = aws_sqs_queue.trades_queue.arn
+  function_name    = aws_lambda_function.trade_broadcaster.arn
+  batch_size       = 10
+  enabled          = true
 }

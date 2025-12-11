@@ -1,175 +1,152 @@
 """
-Ingest Lambda Function
-Validates incoming orders and publishes them to Kinesis Data Stream
+Ingest Lambda (Krок 7)
+Handles POST /orders requests from API Gateway
+Validates order JSON and sends to SQS orders.fifo queue
 """
 import json
 import os
 import uuid
-import time
-from typing import Dict, Any
-import boto3
-from aws_xray_sdk.core import xray_recorder
-from aws_xray_sdk.core import patch_all
+from datetime import datetime
 
-# Patch boto3 for X-Ray tracing
-patch_all()
+# Lazy initialization of boto3 client
+_sqs_client = None
 
-# Initialize AWS clients
-kinesis_client = boto3.client('kinesis')
-dynamodb_client = boto3.client('dynamodb')
+def get_sqs_client():
+    """Get or create SQS client (lazy initialization for testability)."""
+    global _sqs_client
+    if _sqs_client is None:
+        import boto3
+        _sqs_client = boto3.client('sqs')
+    return _sqs_client
 
-# Environment variables
-KINESIS_STREAM = os.environ.get('KINESIS_ORDERS_STREAM')
-DYNAMODB_TABLE = os.environ.get('DYNAMODB_ORDERS_TABLE', '')
+ORDERS_QUEUE_URL = os.environ.get('ORDERS_QUEUE_URL')
+
+# Order schema validation
+REQUIRED_FIELDS = ['symbol', 'side', 'order_type', 'quantity']
+VALID_SIDES = ['buy', 'sell']
+VALID_ORDER_TYPES = ['market', 'limit']
 
 
-def validate_order(order: Dict[str, Any]) -> tuple[bool, str]:
-    """
-    Validate order structure and values
-    
-    Expected format:
-    {
-        "orderId": "string",
-        "symbol": "string",
-        "side": "BUY" | "SELL",
-        "quantity": number,
-        "price": number,
-        "timestamp": number (optional)
-    }
-    """
-    required_fields = ['orderId', 'symbol', 'side', 'quantity', 'price']
-    
+def validate_order(order: dict) -> tuple[bool, str]:
+    """Validate order JSON structure and values."""
     # Check required fields
-    for field in required_fields:
+    for field in REQUIRED_FIELDS:
         if field not in order:
             return False, f"Missing required field: {field}"
     
     # Validate side
-    if order['side'] not in ['BUY', 'SELL']:
-        return False, "side must be 'BUY' or 'SELL'"
+    if order['side'].lower() not in VALID_SIDES:
+        return False, f"Invalid side: {order['side']}. Must be 'buy' or 'sell'"
     
-    # Validate quantity and price are positive numbers
+    # Validate order type
+    if order['order_type'].lower() not in VALID_ORDER_TYPES:
+        return False, f"Invalid order_type: {order['order_type']}. Must be 'market' or 'limit'"
+    
+    # Validate quantity
     try:
         quantity = float(order['quantity'])
-        price = float(order['price'])
-        
         if quantity <= 0:
-            return False, "quantity must be positive"
-        if price <= 0:
-            return False, "price must be positive"
+            return False, "Quantity must be greater than 0"
     except (ValueError, TypeError):
-        return False, "quantity and price must be numeric"
+        return False, "Invalid quantity: must be a positive number"
     
-    # Validate symbol is non-empty string
-    if not isinstance(order['symbol'], str) or len(order['symbol'].strip()) == 0:
-        return False, "symbol must be a non-empty string"
+    # For limit orders, price is required
+    if order['order_type'].lower() == 'limit':
+        if 'price' not in order:
+            return False, "Price is required for limit orders"
+        try:
+            price = float(order['price'])
+            if price <= 0:
+                return False, "Price must be greater than 0"
+        except (ValueError, TypeError):
+            return False, "Invalid price: must be a positive number"
     
-    return True, "OK"
+    return True, ""
 
 
-@xray_recorder.capture('ingest_order')
-def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
+def lambda_handler(event, context):
     """
-    Lambda handler for order ingestion
+    Handle incoming order requests from API Gateway.
     
-    API Gateway event format expected
+    Expected event structure (API Gateway HTTP API v2):
+    {
+        "body": "{\"symbol\": \"BTC-USD\", \"side\": \"buy\", \"order_type\": \"limit\", \"quantity\": 1.0, \"price\": 50000}",
+        "requestContext": {
+            "authorizer": {
+                "jwt": {
+                    "claims": {
+                        "sub": "user-id"
+                    }
+                }
+            }
+        }
+    }
     """
     try:
         # Parse request body
-        if 'body' in event:
-            body = json.loads(event['body']) if isinstance(event['body'], str) else event['body']
+        if isinstance(event.get('body'), str):
+            body = json.loads(event['body'])
         else:
-            body = event
+            body = event.get('body', {})
         
         # Validate order
         is_valid, error_message = validate_order(body)
         if not is_valid:
             return {
                 'statusCode': 400,
-                'headers': {
-                    'Content-Type': 'application/json',
-                    'Access-Control-Allow-Origin': '*'
-                },
-                'body': json.dumps({
-                    'error': 'Validation failed',
-                    'message': error_message
-                })
+                'headers': {'Content-Type': 'application/json'},
+                'body': json.dumps({'error': error_message})
             }
         
-        # Add timestamp if not present
-        if 'timestamp' not in body:
-            body['timestamp'] = int(time.time() * 1000)  # milliseconds
+        # Extract user ID from JWT claims (if authenticated)
+        user_id = 'anonymous'
+        if 'requestContext' in event:
+            authorizer = event['requestContext'].get('authorizer', {})
+            if 'jwt' in authorizer:
+                user_id = authorizer['jwt'].get('claims', {}).get('sub', 'anonymous')
         
-        # Generate order ID if not present
-        if 'orderId' not in body or not body['orderId']:
-            body['orderId'] = str(uuid.uuid4())
+        # Create order message
+        order_id = str(uuid.uuid4())
+        order_message = {
+            'order_id': order_id,
+            'user_id': user_id,
+            'symbol': body['symbol'].upper(),
+            'side': body['side'].lower(),
+            'order_type': body['order_type'].lower(),
+            'quantity': float(body['quantity']),
+            'price': float(body.get('price', 0)) if body['order_type'].lower() == 'limit' else None,
+            'timestamp': datetime.utcnow().isoformat(),
+            'status': 'pending'
+        }
         
-        # Put record to Kinesis
-        partition_key = f"{body['symbol']}-{body['side']}"
-        
-        response = kinesis_client.put_record(
-            StreamName=KINESIS_STREAM,
-            Data=json.dumps(body),
-            PartitionKey=partition_key
+        # Send to SQS FIFO queue
+        # Use symbol as MessageGroupId to ensure orders for same trading pair are processed in order
+        get_sqs_client().send_message(
+            QueueUrl=ORDERS_QUEUE_URL,
+            MessageBody=json.dumps(order_message),
+            MessageGroupId=order_message['symbol']
         )
         
-        # Optionally write to DynamoDB for audit trail
-        if DYNAMODB_TABLE:
-            try:
-                dynamodb_client.put_item(
-                    TableName=DYNAMODB_TABLE,
-                    Item={
-                        'OrderId': {'S': body['orderId']},
-                        'Symbol': {'S': body['symbol']},
-                        'Side': {'S': body['side']},
-                        'Quantity': {'N': str(body['quantity'])},
-                        'Price': {'N': str(body['price'])},
-                        'Timestamp': {'N': str(body['timestamp'])},
-                        'Status': {'S': 'PENDING'},
-                        'KinesisSequenceNumber': {'S': response['SequenceNumber']}
-                    }
-                )
-            except Exception as db_error:
-                # Log error but don't fail the request
-                print(f"Failed to write to DynamoDB: {str(db_error)}")
-        
         return {
-            'statusCode': 200,
-            'headers': {
-                'Content-Type': 'application/json',
-                'Access-Control-Allow-Origin': '*'
-            },
+            'statusCode': 201,
+            'headers': {'Content-Type': 'application/json'},
             'body': json.dumps({
-                'message': 'Order accepted',
-                'orderId': body['orderId'],
-                'sequenceNumber': response['SequenceNumber']
+                'message': 'Order submitted successfully',
+                'order_id': order_id,
+                'order': order_message
             })
         }
-    
-    except json.JSONDecodeError as e:
+        
+    except json.JSONDecodeError:
         return {
             'statusCode': 400,
-            'headers': {
-                'Content-Type': 'application/json',
-                'Access-Control-Allow-Origin': '*'
-            },
-            'body': json.dumps({
-                'error': 'Invalid JSON',
-                'message': str(e)
-            })
+            'headers': {'Content-Type': 'application/json'},
+            'body': json.dumps({'error': 'Invalid JSON in request body'})
         }
-    
     except Exception as e:
         print(f"Error processing order: {str(e)}")
         return {
             'statusCode': 500,
-            'headers': {
-                'Content-Type': 'application/json',
-                'Access-Control-Allow-Origin': '*'
-            },
-            'body': json.dumps({
-                'error': 'Internal server error',
-                'message': 'Failed to process order'
-            })
+            'headers': {'Content-Type': 'application/json'},
+            'body': json.dumps({'error': 'Internal server error'})
         }
-

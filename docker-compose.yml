@@ -1,49 +1,41 @@
+# LocalStack Docker Compose for Local Development (Krок 12)
+# Emulates AWS services (SQS, DynamoDB) for local testing
+
 version: '3.8'
 
 services:
-  # LocalStack - AWS services emulator
   localstack:
-    container_name: localstack
     image: localstack/localstack:latest
+    container_name: bradbid-localstack
     ports:
-      - "4566:4566"            # LocalStack Gateway
+      - "4566:4566"        # LocalStack Gateway
       - "4510-4559:4510-4559"  # External services port range
     environment:
-      - SERVICES=kinesis,dynamodb,s3,secretsmanager,lambda,apigateway,cloudwatch,logs
+      - SERVICES=sqs,dynamodb,s3,lambda,apigateway
       - DEBUG=1
       - DATA_DIR=/tmp/localstack/data
       - DOCKER_HOST=unix:///var/run/docker.sock
-      - LAMBDA_EXECUTOR=docker
-      - LAMBDA_REMOTE_DOCKER=false
-      - LAMBDA_REMOVE_CONTAINERS=true
     volumes:
-      - "./localstack-data:/tmp/localstack"
+      - "${TMPDIR:-/tmp}/localstack:/tmp/localstack"
       - "/var/run/docker.sock:/var/run/docker.sock"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
       interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 3
 
-  # Redis - Order book storage
   redis:
-    container_name: exchange-redis
     image: redis:7-alpine
+    container_name: bradbid-redis
     ports:
       - "6379:6379"
-    command: redis-server --requirepass testpassword
-    healthcheck:
-      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
-      interval: 10s
-      timeout: 3s
-      retries: 5
     volumes:
       - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
 
 volumes:
   redis-data:
-
-networks:
-  default:
-    name: exchange-network
-

@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BradBid Exchange</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div id="app">
+        <header>
+            <h1>🏛️ BradBid Exchange</h1>
+            <div id="auth-status">
+                <span id="user-status">Not logged in</span>
+                <button id="login-btn" onclick="login()">Login</button>
+                <button id="logout-btn" onclick="logout()" style="display:none;">Logout</button>
+            </div>
+        </header>
+
+        <main>
+            <!-- Order Form -->
+            <section class="order-form">
+                <h2>Place Order</h2>
+                <form id="order-form" onsubmit="submitOrder(event)">
+                    <div class="form-group">
+                        <label for="symbol">Symbol</label>
+                        <select id="symbol" required>
+                            <option value="BTC-USD">BTC-USD</option>
+                            <option value="ETH-USD">ETH-USD</option>
+                            <option value="SOL-USD">SOL-USD</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="side">Side</label>
+                        <select id="side" required>
+                            <option value="buy">Buy</option>
+                            <option value="sell">Sell</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="order-type">Order Type</label>
+                        <select id="order-type" required onchange="togglePriceField()">
+                            <option value="limit">Limit</option>
+                            <option value="market">Market</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="quantity">Quantity</label>
+                        <input type="number" id="quantity" step="0.001" min="0.001" required>
+                    </div>
+                    <div class="form-group" id="price-group">
+                        <label for="price">Price</label>
+                        <input type="number" id="price" step="0.01" min="0.01">
+                    </div>
+                    <button type="submit" class="submit-btn">Submit Order</button>
+                </form>
+            </section>
+
+            <!-- Live Trades -->
+            <section class="trades-feed">
+                <h2>📊 Live Trades</h2>
+                <div id="connection-status" class="disconnected">Disconnected</div>
+                <table id="trades-table">
+                    <thead>
+                        <tr>
+                            <th>Time</th>
+                            <th>Symbol</th>
+                            <th>Price</th>
+                            <th>Quantity</th>
+                            <th>Value</th>
+                        </tr>
+                    </thead>
+                    <tbody id="trades-body">
+                        <!-- Trades will be inserted here -->
+                    </tbody>
+                </table>
+            </section>
+
+            <!-- Order Book Preview -->
+            <section class="order-book">
+                <h2>📖 Order Book</h2>
+                <div class="book-container">
+                    <div class="asks">
+                        <h3>Asks (Sells)</h3>
+                        <div id="asks-list"></div>
+                    </div>
+                    <div class="bids">
+                        <h3>Bids (Buys)</h3>
+                        <div id="bids-list"></div>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <footer>
+            <p>BradBid Exchange - Sigmoindus Student Team - BDIT4DA Big Data Course</p>
+        </footer>
+    </div>
+
+    <script src="config.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>

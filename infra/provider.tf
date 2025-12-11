@@ -20,6 +20,12 @@ variable "aws_region" {
   default     = "eu-central-1"
 }
 
+variable "enable_firehose" {
+  description = "Enable Kinesis Firehose for analytics (requires AWS subscription)"
+  type        = bool
+  default     = false
+}
+
 provider "aws" {
   region = var.aws_region
 

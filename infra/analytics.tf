@@ -1,30 +1,134 @@
 # =============================================================================
-# ANALYTICS PIPELINE (GLUE & ATHENA)
-# Cost: Glue Crawler: $0.44 per DPU-hour, Athena: $5 per TB scanned
+# ANALYTICS LAYER (Krок 9)
+# Firehose, Glue, and Athena for trade data analytics
 # =============================================================================
 
-# IAM Role for Glue Crawler
-resource "aws_iam_role" "glue_crawler_role" {
-  name = "glue-crawler-role"
+# -----------------------------------------------------------------------------
+# Kinesis Firehose for streaming trade data to S3
+# -----------------------------------------------------------------------------
+resource "aws_kinesis_firehose_delivery_stream" "trades_firehose" {
+  count       = var.enable_firehose ? 1 : 0
+  name        = "exchange-trades-firehose"
+  destination = "extended_s3"
+
+  extended_s3_configuration {
+    role_arn           = aws_iam_role.firehose_role[0].arn
+    bucket_arn         = aws_s3_bucket.analytics_bucket.arn
+    prefix             = "trades/year=!{timestamp:yyyy}/month=!{timestamp:MM}/day=!{timestamp:dd}/"
+    error_output_prefix = "errors/!{firehose:error-output-type}/year=!{timestamp:yyyy}/month=!{timestamp:MM}/day=!{timestamp:dd}/"
+    
+    buffering_size     = 5   # 5 MB minimum
+    buffering_interval = 300 # 5 minutes for cost optimization
+
+    cloudwatch_logging_options {
+      enabled         = true
+      log_group_name  = aws_cloudwatch_log_group.firehose_logs[0].name
+      log_stream_name = "S3Delivery"
+    }
+  }
+}
+
+resource "aws_cloudwatch_log_group" "firehose_logs" {
+  count             = var.enable_firehose ? 1 : 0
+  name              = "/aws/kinesisfirehose/exchange-trades"
+  retention_in_days = 7
+}
+
+# IAM Role for Firehose
+resource "aws_iam_role" "firehose_role" {
+  count = var.enable_firehose ? 1 : 0
+  name  = "exchange_firehose_role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
+    Statement = [{
+      Action = "sts:AssumeRole"
+      Effect = "Allow"
+      Principal = { Service = "firehose.amazonaws.com" }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "firehose_policy" {
+  count = var.enable_firehose ? 1 : 0
+  name  = "firehose_s3_access"
+  role  = aws_iam_role.firehose_role[0].id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
     Statement = [
       {
-        Action = "sts:AssumeRole"
         Effect = "Allow"
-        Principal = {
-          Service = "glue.amazonaws.com"
-        }
+        Action = [
+          "s3:AbortMultipartUpload",
+          "s3:GetBucketLocation",
+          "s3:GetObject",
+          "s3:ListBucket",
+          "s3:ListBucketMultipartUploads",
+          "s3:PutObject"
+        ]
+        Resource = [
+          aws_s3_bucket.analytics_bucket.arn,
+          "${aws_s3_bucket.analytics_bucket.arn}/*"
+        ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "logs:PutLogEvents"
+        ]
+        Resource = "${aws_cloudwatch_log_group.firehose_logs[0].arn}:*"
       }
     ]
   })
 }
 
-# IAM Policy for Glue Crawler
-resource "aws_iam_role_policy" "glue_crawler_policy" {
-  name = "glue-crawler-policy"
-  role = aws_iam_role.glue_crawler_role.id
+# -----------------------------------------------------------------------------
+# Glue Database and Crawler for trade data
+# -----------------------------------------------------------------------------
+resource "aws_glue_catalog_database" "trades_db" {
+  name = "exchange_trades_db"
+}
+
+resource "aws_glue_crawler" "trades_crawler" {
+  database_name = aws_glue_catalog_database.trades_db.name
+  name          = "exchange-trades-crawler"
+  role          = aws_iam_role.glue_role.arn
+
+  s3_target {
+    path = "s3://${aws_s3_bucket.analytics_bucket.bucket}/trades/"
+  }
+
+  schema_change_policy {
+    delete_behavior = "LOG"
+    update_behavior = "UPDATE_IN_DATABASE"
+  }
+
+  schedule = "cron(0 0 * * ? *)" # Run daily at midnight
+}
+
+# IAM Role for Glue
+resource "aws_iam_role" "glue_role" {
+  name = "exchange_glue_role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action = "sts:AssumeRole"
+      Effect = "Allow"
+      Principal = { Service = "glue.amazonaws.com" }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "glue_service" {
+  role       = aws_iam_role.glue_role.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole"
+}
+
+resource "aws_iam_role_policy" "glue_s3_policy" {
+  name = "glue_s3_access"
+  role = aws_iam_role.glue_role.id
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -33,168 +137,52 @@ resource "aws_iam_role_policy" "glue_crawler_policy" {
         Effect = "Allow"
         Action = [
           "s3:GetObject",
-          "s3:PutObject"
-        ]
-        Resource = [
-          "${aws_s3_bucket.data_lake.arn}/*"
-        ]
-      },
-      {
-        Effect = "Allow"
-        Action = [
           "s3:ListBucket"
         ]
         Resource = [
-          aws_s3_bucket.data_lake.arn
-        ]
-      },
-      {
-        Effect = "Allow"
-        Action = [
-          "logs:CreateLogGroup",
-          "logs:CreateLogStream",
-          "logs:PutLogEvents"
-        ]
-        Resource = [
-          "arn:aws:logs:${var.aws_region}:*:*"
+          aws_s3_bucket.analytics_bucket.arn,
+          "${aws_s3_bucket.analytics_bucket.arn}/*"
         ]
       }
     ]
   })
 }
 
-# Glue Database
-resource "aws_glue_catalog_database" "exchange_db" {
-  name        = "exchange_data_lake"
-  description = "Database for exchange orders and trades data"
-}
-
-# Glue Crawler for Orders
-resource "aws_glue_crawler" "orders_crawler" {
-  database_name = aws_glue_catalog_database.exchange_db.name
-  name          = "orders-crawler"
-  role          = aws_iam_role.glue_crawler_role.arn
-
-  s3_target {
-    path = "s3://${aws_s3_bucket.data_lake.id}/orders/"
-  }
-
-  schema_change_policy {
-    delete_behavior = "LOG"
-    update_behavior = "UPDATE_IN_DATABASE"
-  }
-
-  configuration = jsonencode({
-    Version = 1.0
-    Grouping = {
-      TableGroupingPolicy = "CombineCompatibleSchemas"
-    }
-    CrawlerOutput = {
-      Partitions = {
-        AddOrUpdateBehavior = "InheritFromTable"
-      }
-    }
-  })
-}
-
-# Glue Crawler for Trades
-resource "aws_glue_crawler" "trades_crawler" {
-  database_name = aws_glue_catalog_database.exchange_db.name
-  name          = "trades-crawler"
-  role          = aws_iam_role.glue_crawler_role.arn
-
-  s3_target {
-    path = "s3://${aws_s3_bucket.data_lake.id}/trades/"
-  }
-
-  schema_change_policy {
-    delete_behavior = "LOG"
-    update_behavior = "UPDATE_IN_DATABASE"
-  }
-
-  configuration = jsonencode({
-    Version = 1.0
-    Grouping = {
-      TableGroupingPolicy = "CombineCompatibleSchemas"
-    }
-    CrawlerOutput = {
-      Partitions = {
-        AddOrUpdateBehavior = "InheritFromTable"
-      }
-    }
-  })
-}
-
-# S3 bucket for Athena query results
-resource "aws_s3_bucket" "athena_results" {
-  bucket = "${var.project_name}-athena-results-${data.aws_caller_identity.current.account_id}"
-
-  tags = {
-    Name = "AthenaResults"
-  }
-}
-
-# Prevent accidental public access
-resource "aws_s3_bucket_public_access_block" "athena_results" {
-  bucket = aws_s3_bucket.athena_results.id
-
-  block_public_acls       = true
-  block_public_policy     = true
-  ignore_public_acls      = true
-  restrict_public_buckets = true
-}
-
-# Lifecycle policy for Athena results (delete after 30 days)
-resource "aws_s3_bucket_lifecycle_configuration" "athena_results" {
-  bucket = aws_s3_bucket.athena_results.id
-
-  rule {
-    id     = "delete-old-results"
-    status = "Enabled"
-
-    filter {}
-
-    expiration {
-      days = 30
-    }
-  }
-}
-
-# Athena Workgroup
-resource "aws_athena_workgroup" "exchange_workgroup" {
-  name = "exchange-analytics"
+# -----------------------------------------------------------------------------
+# Athena Workgroup for querying trade data
+# -----------------------------------------------------------------------------
+resource "aws_athena_workgroup" "trades_workgroup" {
+  name = "exchange-trades-workgroup"
 
   configuration {
+    result_configuration {
+      output_location = "s3://${aws_s3_bucket.analytics_bucket.bucket}/athena-results/"
+    }
+
     enforce_workgroup_configuration    = true
     publish_cloudwatch_metrics_enabled = true
-
-    result_configuration {
-      output_location = "s3://${aws_s3_bucket.athena_results.id}/"
-
-      encryption_configuration {
-        encryption_option = "SSE_S3"  # S3-managed encryption (free)
-      }
-    }
-
-    # Cost optimization: use latest engine version
-    engine_version {
-      selected_engine_version = "Athena engine version 3"
-    }
   }
 
-  tags = {
-    Name = "exchange-analytics"
-  }
+  force_destroy = true
 }
 
 # Outputs
+output "firehose_delivery_stream_name" {
+  description = "Name of the Firehose delivery stream"
+  value       = var.enable_firehose ? aws_kinesis_firehose_delivery_stream.trades_firehose[0].name : null
+}
+
+output "firehose_delivery_stream_arn" {
+  description = "ARN of the Firehose delivery stream"
+  value       = var.enable_firehose ? aws_kinesis_firehose_delivery_stream.trades_firehose[0].arn : null
+}
+
 output "glue_database_name" {
   description = "Name of the Glue database"
-  value       = aws_glue_catalog_database.exchange_db.name
+  value       = aws_glue_catalog_database.trades_db.name
 }
 
 output "athena_workgroup_name" {
   description = "Name of the Athena workgroup"
-  value       = aws_athena_workgroup.exchange_workgroup.name
+  value       = aws_athena_workgroup.trades_workgroup.name
 }
-
