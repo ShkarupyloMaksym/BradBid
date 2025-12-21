@@ -1,0 +1,793 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CryptoBid Exchange - Professional Trading Platform</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://s3.tradingview.com/tv.js"></script>
+    
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        
+        html, body {
+            height: 100%;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background-color: #0b0e11;
+            color: #e0e3eb;
+            overflow: hidden;
+        }
+        
+        .orderbook-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 2px 10px;
+            font-size: 11px;
+            font-family: 'Courier New', monospace;
+            position: relative;
+            cursor: pointer;
+        }
+        
+        .orderbook-row:hover { background-color: #1a1d24; }
+        .orderbook-row.ask { color: #f6465d; }
+        .orderbook-row.bid { color: #0ecb81; }
+        
+        .orderbook-row .depth-bar {
+            position: absolute;
+            right: 0;
+            top: 0;
+            height: 100%;
+            opacity: 0.12;
+            z-index: 0;
+        }
+        
+        .orderbook-row.ask .depth-bar { background-color: #f6465d; }
+        .orderbook-row.bid .depth-bar { background-color: #0ecb81; }
+        .orderbook-row span { position: relative; z-index: 1; }
+        
+        .market-item {
+            padding: 10px 12px;
+            cursor: pointer;
+            border-bottom: 1px solid #1a1d24;
+            transition: all 0.15s;
+        }
+        
+        .market-item:hover { background-color: #1a1d24; }
+        .market-item.active {
+            background-color: #1e2329;
+            border-left: 3px solid #0ecb81;
+        }
+        
+        #tradingview_chart { width: 100%; height: 100%; }
+        
+        .view-container { display: none; }
+        .view-container.active { display: flex; }
+        
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: #0b0e11; }
+        ::-webkit-scrollbar-thumb { background: #2a2e39; border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: #363a45; }
+    </style>
+</head>
+<body class="h-screen flex flex-col overflow-hidden bg-[#0b0e11] text-[#e0e3eb]">
+    
+    <!-- Header: 60px flex-none -->
+    <header class="h-[60px] flex-none bg-[#16191f] border-b border-[#2a2e39] flex items-center justify-between px-5">
+        <div class="flex items-center space-x-6">
+            <h1 class="text-xl font-bold text-yellow-500">CryptoBid</h1>
+            <nav class="flex space-x-1">
+                <button class="nav-btn active" data-nav="trade">Trade</button>
+                <button class="nav-btn" data-nav="derivatives">Derivatives</button>
+                <button class="nav-btn" data-nav="earn">Earn</button>
+                <button class="nav-btn" data-nav="finance">Finance</button>
+            </nav>
+        </div>
+        <div class="flex items-center space-x-4">
+            <div class="text-sm text-gray-400">
+                <span>24h Vol:</span>
+                <span class="text-white ml-1">$2.4B</span>
+            </div>
+            <button class="bg-yellow-500 text-black px-4 py-2 rounded font-semibold hover:opacity-90 transition">
+                Connect Wallet
+            </button>
+        </div>
+    </header>
+
+    <!-- Main Body: flex-1 grid -->
+    <main class="flex-1 grid grid-cols-[280px_1fr_320px] overflow-hidden">
+        
+        <!-- LEFT: Order Book (280px) -->
+        <aside class="bg-[#131722] border-r border-[#2a2e39] flex flex-col overflow-hidden">
+            <div class="p-3 border-b border-[#2a2e39]">
+                <h3 class="text-sm font-semibold text-gray-300">Order Book</h3>
+            </div>
+            
+            <div class="flex-1 overflow-y-auto">
+                <!-- Asks (Sells) -->
+                <div id="orderbookAsks"></div>
+                
+                <!-- Spread Indicator -->
+                <div class="flex justify-center items-center py-2 bg-[#1e222d] text-gray-400 text-xs font-semibold border-y border-[#2a2e39]" id="spreadIndicator">
+                    Spread: 9.00 (0.020%)
+                </div>
+                
+                <!-- Bids (Buys) -->
+                <div id="orderbookBids"></div>
+            </div>
+        </aside>
+
+        <!-- CENTER: Chart & Forms (1fr) -->
+        <div class="flex flex-col overflow-hidden">
+            
+            <!-- TRADE VIEW -->
+            <div id="trade-view" class="view-container active flex-col flex-1 overflow-hidden">
+                
+                <!-- Chart Area: 70% -->
+                <section class="flex-[0.7] bg-[#131722] border-b border-[#2a2e39] flex flex-col overflow-hidden">
+                    <div class="flex items-center justify-between px-4 py-2 border-b border-[#2a2e39]">
+                        <div class="flex items-center space-x-3">
+                            <h2 class="text-lg font-bold" id="currentPairLabel">BTC/USDT</h2>
+                            <div class="text-green-400 text-sm font-semibold" id="priceChange">+2.4%</div>
+                            <div class="text-white text-lg font-mono" id="currentPrice">90,000.00</div>
+                        </div>
+                        <div class="flex space-x-3 text-xs text-gray-400">
+                            <span>24h High: <span class="text-white" id="high24h">90,890</span></span>
+                            <span>24h Low: <span class="text-white" id="low24h">88,120</span></span>
+                            <span>24h Vol: <span class="text-white" id="vol24h">12,456</span> BTC</span>
+                        </div>
+                    </div>
+                    <div id="tradingview_chart" class="flex-1"></div>
+                </section>
+
+                <!-- Order Form Area: 30% -->
+                <section class="flex-[0.3] bg-[#16191f] overflow-y-auto">
+                    <div class="grid grid-cols-2 gap-3 p-4">
+                        
+                        <!-- BUY/LONG Side -->
+                        <div class="bg-[#131722] rounded p-3">
+                            <div class="flex gap-2 mb-3">
+                                <button class="order-type-btn active flex-1 text-xs py-1.5" data-type="limit">Limit</button>
+                                <button class="order-type-btn flex-1 text-xs py-1.5" data-type="market">Market</button>
+                            </div>
+                            
+                            <form id="orderForm" class="space-y-2.5">
+                                <select id="pairSelect" class="hidden">
+                                    <option value="BTC_USD">BTC/USD</option>
+                                    <option value="ETH_USD">ETH/USD</option>
+                                    <option value="SOL_USD">SOL/USD</option>
+                                    <option value="DOGE_USD">DOGE/USD</option>
+                                </select>
+                                
+                                <div>
+                                    <label class="text-xs text-gray-400 mb-1 block font-medium">Price (USDT)</label>
+                                    <input type="number" id="priceInput" class="w-full bg-[#1e222d] border border-[#2a2e39] text-white px-3 py-2.5 rounded text-sm focus:border-gray-500 outline-none" placeholder="0.00" step="0.01" min="0">
+                                </div>
+                                
+                                <div>
+                                    <label class="text-xs text-gray-400 mb-1 block font-medium">Amount</label>
+                                    <input type="number" id="amountInput" class="w-full bg-[#1e222d] border border-[#2a2e39] text-white px-3 py-2.5 rounded text-sm focus:border-gray-500 outline-none" placeholder="0.000" step="0.001" min="0">
+                                </div>
+                                
+                                <div>
+                                    <label class="text-xs text-gray-400 mb-1 block font-medium">Trader ID</label>
+                                    <input type="text" id="userIdInput" class="w-full bg-[#1e222d] border border-[#2a2e39] text-white px-3 py-2.5 rounded text-sm focus:border-gray-500 outline-none" value="trader-1">
+                                </div>
+                                
+                                <button type="button" id="buyBtn" class="w-full bg-gradient-to-r from-[#0ecb81] to-[#0fb574] text-white py-3 rounded font-semibold text-sm hover:opacity-90 transition">
+                                    Buy / Long <span id="buyPairLabel">BTC</span>
+                                </button>
+                            </form>
+                        </div>
+
+                        <!-- SELL/SHORT Side -->
+                        <div class="bg-[#131722] rounded p-3">
+                            <div class="h-[34px] mb-3"></div>
+                            <div class="space-y-2.5 mt-2.5">
+                                <div>
+                                    <label class="text-xs text-gray-400 mb-1 block font-medium">Available</label>
+                                    <div class="w-full bg-[#0f1216] text-gray-500 px-3 py-2.5 rounded text-sm">0.00000000 BTC</div>
+                                </div>
+                                
+                                <div>
+                                    <label class="text-xs text-gray-400 mb-1 block font-medium">Total (USDT)</label>
+                                    <div class="w-full bg-[#0f1216] text-gray-500 px-3 py-2.5 rounded text-sm">0.00</div>
+                                </div>
+                                
+                                <div class="h-[42px]"></div>
+                                
+                                <button type="button" id="sellBtn" class="w-full bg-gradient-to-r from-[#f6465d] to-[#d63649] text-white py-3 rounded font-semibold text-sm hover:opacity-90 transition">
+                                    Sell / Short <span id="sellPairLabel">BTC</span>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+            </div>
+
+            <!-- DERIVATIVES VIEW -->
+            <div id="derivatives-view" class="view-container flex-col flex-1 bg-[#131722] overflow-y-auto p-6">
+                <h2 class="text-xl font-bold mb-4">Perpetual Futures Contracts</h2>
+                
+                <div class="bg-[#1e222d] rounded-lg p-4 mb-4">
+                    <table class="w-full text-sm">
+                        <thead class="border-b border-[#2a2e39]">
+                            <tr class="text-left text-gray-400">
+                                <th class="pb-3 font-medium">Metric</th>
+                                <th class="pb-3 font-medium">Value</th>
+                                <th class="pb-3 font-medium">Change</th>
+                            </tr>
+                        </thead>
+                        <tbody class="text-white">
+                            <tr class="border-b border-[#1a1d24]">
+                                <td class="py-3">Mark Price</td>
+                                <td class="py-3 font-mono">90,012.50 USDT</td>
+                                <td class="py-3 text-green-400">+0.02%</td>
+                            </tr>
+                            <tr class="border-b border-[#1a1d24]">
+                                <td class="py-3">Index Price</td>
+                                <td class="py-3 font-mono">90,008.33 USDT</td>
+                                <td class="py-3 text-green-400">+0.01%</td>
+                            </tr>
+                            <tr class="border-b border-[#1a1d24]">
+                                <td class="py-3">Funding Rate</td>
+                                <td class="py-3 font-mono">0.0100%</td>
+                                <td class="py-3 text-gray-400">Next: 7h 23m</td>
+                            </tr>
+                            <tr class="border-b border-[#1a1d24]">
+                                <td class="py-3">Open Interest</td>
+                                <td class="py-3 font-mono">234,567 BTC</td>
+                                <td class="py-3 text-red-400">-2.1%</td>
+                            </tr>
+                            <tr>
+                                <td class="py-3">24h Volume</td>
+                                <td class="py-3 font-mono">1,234,890 BTC</td>
+                                <td class="py-3 text-green-400">+12.4%</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <button class="bg-yellow-500 text-black px-6 py-3 rounded-lg font-semibold hover:opacity-90 transition">
+                    Activate Futures Trading
+                </button>
+            </div>
+
+            <!-- EARN VIEW -->
+            <div id="earn-view" class="view-container flex-col flex-1 bg-[#131722] overflow-y-auto p-6">
+                <h2 class="text-xl font-bold mb-4">Earn Crypto</h2>
+                
+                <div class="space-y-3">
+                    <div class="bg-[#1e222d] rounded-lg p-4 hover:bg-[#252931] transition cursor-pointer">
+                        <div class="flex justify-between items-center">
+                            <div>
+                                <h3 class="font-semibold mb-1">USDT Flexible Staking</h3>
+                                <p class="text-xs text-gray-400">Earn interest on your USDT holdings</p>
+                            </div>
+                            <div class="text-right">
+                                <div class="text-2xl font-bold text-green-400">5.0%</div>
+                                <div class="text-xs text-gray-500">APY</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="bg-[#1e222d] rounded-lg p-4 hover:bg-[#252931] transition cursor-pointer">
+                        <div class="flex justify-between items-center">
+                            <div>
+                                <h3 class="font-semibold mb-1">BTC Vault</h3>
+                                <p class="text-xs text-gray-400">Lock your Bitcoin for steady returns</p>
+                            </div>
+                            <div class="text-right">
+                                <div class="text-2xl font-bold text-green-400">2.0%</div>
+                                <div class="text-xs text-gray-500">APY</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="bg-[#1e222d] rounded-lg p-4 hover:bg-[#252931] transition cursor-pointer">
+                        <div class="flex justify-between items-center">
+                            <div>
+                                <h3 class="font-semibold mb-1">ETH 2.0 Staking</h3>
+                                <p class="text-xs text-gray-400">Stake Ethereum for rewards</p>
+                            </div>
+                            <div class="text-right">
+                                <div class="text-2xl font-bold text-green-400">4.5%</div>
+                                <div class="text-xs text-gray-500">APY</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="bg-[#1e222d] rounded-lg p-4 hover:bg-[#252931] transition cursor-pointer">
+                        <div class="flex justify-between items-center">
+                            <div>
+                                <h3 class="font-semibold mb-1">BTC/USDT Liquidity Pool</h3>
+                                <p class="text-xs text-gray-400">Provide liquidity and earn fees</p>
+                            </div>
+                            <div class="text-right">
+                                <div class="text-2xl font-bold text-green-400">7.2%</div>
+                                <div class="text-xs text-gray-500">APY</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- FINANCE VIEW -->
+            <div id="finance-view" class="view-container flex-col flex-1 bg-[#131722] items-center justify-center p-6">
+                <div class="text-center max-w-lg">
+                    <h2 class="text-2xl font-bold mb-4">Finance Center</h2>
+                    <p class="text-gray-400 mb-6">Manage deposits, withdrawals, and payment methods</p>
+                    
+                    <div class="grid grid-cols-2 gap-4 mb-6">
+                        <button class="bg-green-600 hover:bg-green-700 text-white py-4 rounded-lg font-semibold transition">
+                            Deposit
+                        </button>
+                        <button class="bg-red-600 hover:bg-red-700 text-white py-4 rounded-lg font-semibold transition">
+                            Withdraw
+                        </button>
+                    </div>
+                    
+                    <div class="p-6 bg-[#1e222d] rounded-lg">
+                        <div class="text-gray-500 text-sm mb-2">Total Balance</div>
+                        <div class="text-3xl font-bold text-white">$0.00</div>
+                        <div class="text-gray-500 text-xs mt-1">≈ 0.00000000 BTC</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- RIGHT: Markets (320px) -->
+        <aside class="bg-[#131722] border-l border-[#2a2e39] flex flex-col overflow-hidden">
+            <div class="p-3 border-b border-[#2a2e39]">
+                <h3 class="text-sm font-semibold text-gray-300 mb-2">Markets</h3>
+                <!-- Search Input -->
+                <div class="relative">
+                    <input type="text" id="marketSearch" placeholder="🔍 Search Coin..." class="w-full bg-[#1e222d] border border-[#2a2e39] text-white text-xs px-3 py-2 rounded focus:border-gray-500 outline-none">
+                </div>
+            </div>
+            
+            <!-- Markets List -->
+            <div id="marketsList" class="flex-1 overflow-y-auto">
+                <div class="market-item active" data-pair="BTC_USD" data-symbol="BTCUSDT" data-price="90000" data-change="2.4">
+                    <div class="flex justify-between items-center">
+                        <div>
+                            <div class="font-semibold text-sm">BTC/USDT</div>
+                            <div class="text-xs text-gray-500">Bitcoin</div>
+                        </div>
+                        <div class="text-right">
+                            <div class="font-semibold text-sm font-mono">90,000.00</div>
+                            <div class="text-xs text-green-400">+2.4%</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="market-item" data-pair="ETH_USD" data-symbol="ETHUSD" data-price="3200" data-change="-1.2">
+                    <div class="flex justify-between items-center">
+                        <div>
+                            <div class="font-semibold text-sm">ETH/USDT</div>
+                            <div class="text-xs text-gray-500">Ethereum</div>
+                        </div>
+                        <div class="text-right">
+                            <div class="font-semibold text-sm font-mono">3,200.00</div>
+                            <div class="text-xs text-red-400">-1.2%</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="market-item" data-pair="SOL_USD" data-symbol="SOLUSD" data-price="145" data-change="5.8">
+                    <div class="flex justify-between items-center">
+                        <div>
+                            <div class="font-semibold text-sm">SOL/USDT</div>
+                            <div class="text-xs text-gray-500">Solana</div>
+                        </div>
+                        <div class="text-right">
+                            <div class="font-semibold text-sm font-mono">145.00</div>
+                            <div class="text-xs text-green-400">+5.8%</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="market-item" data-pair="DOGE_USD" data-symbol="DOGEUSD" data-price="0.089" data-change="-0.3">
+                    <div class="flex justify-between items-center">
+                        <div>
+                            <div class="font-semibold text-sm">DOGE/USDT</div>
+                            <div class="text-xs text-gray-500">Dogecoin</div>
+                        </div>
+                        <div class="text-right">
+                            <div class="font-semibold text-sm font-mono">0.0890</div>
+                            <div class="text-xs text-red-400">-0.3%</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="market-item" data-pair="BNB_USD" data-symbol="BNBUSDT" data-price="312" data-change="1.9">
+                    <div class="flex justify-between items-center">
+                        <div>
+                            <div class="font-semibold text-sm">BNB/USDT</div>
+                            <div class="text-xs text-gray-500">Binance Coin</div>
+                        </div>
+                        <div class="text-right">
+                            <div class="font-semibold text-sm font-mono">312.00</div>
+                            <div class="text-xs text-green-400">+1.9%</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="market-item" data-pair="ADA_USD" data-symbol="ADAUSDT" data-price="0.452" data-change="3.2">
+                    <div class="flex justify-between items-center">
+                        <div>
+                            <div class="font-semibold text-sm">ADA/USDT</div>
+                            <div class="text-xs text-gray-500">Cardano</div>
+                        </div>
+                        <div class="text-right">
+                            <div class="font-semibold text-sm font-mono">0.4520</div>
+                            <div class="text-xs text-green-400">+3.2%</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="market-item" data-pair="XRP_USD" data-symbol="XRPUSDT" data-price="0.623" data-change="-2.1">
+                    <div class="flex justify-between items-center">
+                        <div>
+                            <div class="font-semibold text-sm">XRP/USDT</div>
+                            <div class="text-xs text-gray-500">Ripple</div>
+                        </div>
+                        <div class="text-right">
+                            <div class="font-semibold text-sm font-mono">0.6230</div>
+                            <div class="text-xs text-red-400">-2.1%</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="market-item" data-pair="DOT_USD" data-symbol="DOTUSDT" data-price="5.89" data-change="0.8">
+                    <div class="flex justify-between items-center">
+                        <div>
+                            <div class="font-semibold text-sm">DOT/USDT</div>
+                            <div class="text-xs text-gray-500">Polkadot</div>
+                        </div>
+                        <div class="text-right">
+                            <div class="font-semibold text-sm font-mono">5.89</div>
+                            <div class="text-xs text-green-400">+0.8%</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </aside>
+    </main>
+
+    <!-- Footer: 200px flex-none -->
+    <footer class="h-[200px] flex-none bg-[#16191f] border-t border-[#2a2e39] flex flex-col">
+        <div class="flex border-b border-[#2a2e39]">
+            <button class="tab-btn active px-6 py-3 text-sm font-medium text-gray-400 border-b-2 border-transparent hover:text-white transition" data-tab="open-orders">
+                Open Orders (0)
+            </button>
+            <button class="tab-btn px-6 py-3 text-sm font-medium text-gray-400 border-b-2 border-transparent hover:text-white transition" data-tab="order-history">
+                Order History
+            </button>
+            <button class="tab-btn px-6 py-3 text-sm font-medium text-gray-400 border-b-2 border-transparent hover:text-white transition" data-tab="trade-history">
+                Trade History
+            </button>
+            <button class="tab-btn px-6 py-3 text-sm font-medium text-gray-400 border-b-2 border-transparent hover:text-white transition" data-tab="funds">
+                Funds
+            </button>
+        </div>
+        
+        <div class="flex-1 overflow-y-auto p-4">
+            <div id="orderStatus"></div>
+            <table class="w-full text-xs">
+                <thead class="text-gray-400 border-b border-[#2a2e39]">
+                    <tr>
+                        <th class="pb-2 text-left font-medium">Date</th>
+                        <th class="pb-2 text-left font-medium">Pair</th>
+                        <th class="pb-2 text-left font-medium">Type</th>
+                        <th class="pb-2 text-left font-medium">Side</th>
+                        <th class="pb-2 text-left font-medium">Price</th>
+                        <th class="pb-2 text-left font-medium">Amount</th>
+                        <th class="pb-2 text-left font-medium">Filled</th>
+                        <th class="pb-2 text-left font-medium">Total</th>
+                        <th class="pb-2 text-left font-medium">Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td colspan="9" class="text-center text-gray-500 py-12">No open orders</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </footer>
+
+    <!-- JavaScript -->
+    <script>
+        // ========== GLOBAL STATE ==========
+        let currentPair = 'BTC_USD';
+        let currentSymbol = 'BTCUSDT';
+        let currentPrice = 85600;
+        let tvWidget = null;
+        let priceInterval = null;
+        let orderbookInterval = null;
+
+        // ========== TRADING PAIRS CONFIG ==========
+        const pairsConfig = {
+            'BTC_USD': { symbol: 'BTCUSDT', price: 90000, decimals: 2, minTick: 0.5 },
+            'ETH_USD': { symbol: 'ETHUSD', price: 3200, decimals: 2, minTick: 0.1 },
+            'SOL_USD': { symbol: 'SOLUSD', price: 145, decimals: 2, minTick: 0.01 },
+            'DOGE_USD': { symbol: 'DOGEUSD', price: 0.089, decimals: 4, minTick: 0.0001 }
+        };
+
+        // ========== SMART PRICE SIMULATION (Random Walk) ==========
+        function simulateLivePrice(basePrice, minTick) {
+            // Random walk: small drift up or down
+            const drift = (Math.random() - 0.48) * minTick * 10; // Slight upward bias
+            const newPrice = basePrice + drift;
+            return Math.max(newPrice, minTick); // Never go negative
+        }
+
+        function updateLivePrice() {
+            const config = pairsConfig[currentPair];
+            currentPrice = simulateLivePrice(currentPrice, config.minTick);
+            
+            // Update price display
+            document.getElementById('currentPrice').textContent = currentPrice.toFixed(config.decimals);
+            
+            // Update 24h stats (slight simulation)
+            const high = currentPrice * 1.01;
+            const low = currentPrice * 0.98;
+            document.getElementById('high24h').textContent = high.toFixed(config.decimals);
+            document.getElementById('low24h').textContent = low.toFixed(config.decimals);
+        }
+
+        // ========== CONTEXT-AWARE ORDER BOOK GENERATOR ==========
+        function generateOrderBook(basePrice, decimals, count = 15) {
+            const asks = [];
+            const bids = [];
+            const spread = basePrice * 0.0001; // 0.01% spread
+            
+            for (let i = 0; i < count; i++) {
+                // Asks (above price)
+                const askPrice = basePrice + spread + (i * spread * 0.5);
+                const askAmount = Math.random() * 3 + 0.1;
+                asks.push({
+                    price: askPrice,
+                    amount: askAmount,
+                    total: askPrice * askAmount,
+                    depth: Math.random() * 100
+                });
+                
+                // Bids (below price)
+                const bidPrice = basePrice - spread - (i * spread * 0.5);
+                const bidAmount = Math.random() * 3 + 0.1;
+                bids.push({
+                    price: bidPrice,
+                    amount: bidAmount,
+                    total: bidPrice * bidAmount,
+                    depth: Math.random() * 100
+                });
+            }
+            
+            return { asks: asks.reverse(), bids };
+        }
+
+        function renderOrderBook() {
+            const config = pairsConfig[currentPair];
+            const { asks, bids } = generateOrderBook(currentPrice, config.decimals, 15);
+            
+            // Render Asks
+            const asksContainer = document.getElementById('orderbookAsks');
+            asksContainer.innerHTML = asks.map(order => `
+                <div class="orderbook-row ask">
+                    <div class="depth-bar" style="width: ${order.depth}%"></div>
+                    <span>${order.price.toFixed(config.decimals)}</span>
+                    <span>${order.amount.toFixed(4)}</span>
+                    <span>${order.total.toFixed(2)}</span>
+                </div>
+            `).join('');
+            
+            // Render Bids
+            const bidsContainer = document.getElementById('orderbookBids');
+            bidsContainer.innerHTML = bids.map(order => `
+                <div class="orderbook-row bid">
+                    <div class="depth-bar" style="width: ${order.depth}%"></div>
+                    <span>${order.price.toFixed(config.decimals)}</span>
+                    <span>${order.amount.toFixed(4)}</span>
+                    <span>${order.total.toFixed(2)}</span>
+                </div>
+            `).join('');
+            
+            // Update spread
+            const spread = asks[asks.length - 1].price - bids[0].price;
+            const spreadPercent = (spread / bids[0].price) * 100;
+            document.getElementById('spreadIndicator').textContent = 
+                `Spread: ${spread.toFixed(config.decimals)} (${spreadPercent.toFixed(3)}%)`;
+        }
+
+        // ========== MARKET PAIR SWITCHING ==========
+        function switchPair(pair, symbol, price) {
+            currentPair = pair;
+            currentSymbol = symbol;
+            currentPrice = price;
+            
+            document.getElementById('pairSelect').value = pair;
+            
+            const baseCurrency = pair.split('_')[0];
+            document.getElementById('buyPairLabel').textContent = baseCurrency;
+            document.getElementById('sellPairLabel').textContent = baseCurrency;
+            document.getElementById('currentPairLabel').textContent = pair.replace('_', '/');
+            
+            // Update chart
+            if (typeof TradingView !== 'undefined') {
+                initTradingView(symbol);
+            }
+            
+            // Instantly update order book to new price
+            renderOrderBook();
+        }
+
+        // ========== TRADINGVIEW CHART ==========
+        function initTradingView(symbol) {
+            if (typeof TradingView === 'undefined') return;
+            
+            if (tvWidget) {
+                try { tvWidget.remove(); } catch(e) {}
+            }
+            
+            document.getElementById('tradingview_chart').innerHTML = '';
+            
+            try {
+                tvWidget = new TradingView.widget({
+                    autosize: true,
+                    symbol: symbol,
+                    interval: "15",
+                    timezone: "Etc/UTC",
+                    theme: "dark",
+                    style: "1",
+                    locale: "en",
+                    toolbar_bg: "#0b0e11",
+                    enable_publishing: false,
+                    hide_side_toolbar: false,
+                    allow_symbol_change: true,
+                    container_id: "tradingview_chart",
+                    studies: ["Volume@tv-basicstudies"],
+                    backgroundColor: "#131722",
+                    gridColor: "rgba(30, 35, 41, 0.5)",
+                    overrides: {
+                        "paneProperties.background": "#131722",
+                        "paneProperties.backgroundType": "solid"
+                    }
+                });
+            } catch(e) {
+                console.error('TradingView error:', e);
+            }
+        }
+
+        // ========== EVENT HANDLERS ==========
+        
+        // Navigation tabs
+        document.querySelectorAll('.nav-btn').forEach(btn => {
+            btn.addEventListener('click', function() {
+                document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active', 'text-yellow-500', 'bg-[#1e222d]'));
+                this.classList.add('active', 'text-yellow-500', 'bg-[#1e222d]');
+                
+                document.querySelectorAll('.view-container').forEach(v => v.classList.remove('active'));
+                document.getElementById(this.dataset.nav + '-view').classList.add('active');
+            });
+        });
+
+        // Footer tabs
+        document.querySelectorAll('.tab-btn').forEach(btn => {
+            btn.addEventListener('click', function() {
+                document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active', 'text-white', 'border-[#0ecb81]'));
+                this.classList.add('active', 'text-white', 'border-[#0ecb81]');
+            });
+        });
+
+        // Order type toggle
+        document.querySelectorAll('.order-type-btn').forEach(btn => {
+            btn.addEventListener('click', function() {
+                document.querySelectorAll('.order-type-btn').forEach(b => b.classList.remove('active', 'bg-[#2a2e39]', 'text-white'));
+                this.classList.add('active', 'bg-[#2a2e39]', 'text-white');
+                
+                const priceInput = document.getElementById('priceInput');
+                if (this.dataset.type === 'market') {
+                    priceInput.disabled = true;
+                    priceInput.placeholder = 'Market Price';
+                } else {
+                    priceInput.disabled = false;
+                    priceInput.placeholder = '0.00';
+                }
+            });
+        });
+
+        // Market item clicks
+        document.querySelectorAll('.market-item').forEach(item => {
+            item.addEventListener('click', function() {
+                document.querySelectorAll('.market-item').forEach(i => i.classList.remove('active'));
+                this.classList.add('active');
+                
+                const pair = this.dataset.pair;
+                const symbol = this.dataset.symbol;
+                const price = parseFloat(this.dataset.price);
+                
+                switchPair(pair, symbol, price);
+            });
+        });
+
+        // Market search filter
+        document.getElementById('marketSearch').addEventListener('input', function(e) {
+            const search = e.target.value.toLowerCase();
+            document.querySelectorAll('.market-item').forEach(item => {
+                const text = item.textContent.toLowerCase();
+                item.style.display = text.includes(search) ? 'block' : 'none';
+            });
+        });
+
+        // ========== INITIALIZATION ==========
+        window.addEventListener('load', function() {
+            console.log('Initializing CryptoBid Exchange...');
+            
+            // Initialize chart
+            initTradingView(currentSymbol);
+            
+            // Initial orderbook render
+            renderOrderBook();
+            
+            // Start live price simulation (every 1 second)
+            priceInterval = setInterval(() => {
+                updateLivePrice();
+            }, 1000);
+            
+            // Update orderbook every 1.5 seconds
+            orderbookInterval = setInterval(() => {
+                renderOrderBook();
+            }, 1500);
+            
+            console.log('Exchange ready!');
+        });
+
+        // Add CSS classes for nav buttons
+        const style = document.createElement('style');
+        style.textContent = `
+            .nav-btn {
+                padding: 6px 14px;
+                color: #848e9c;
+                cursor: pointer;
+                border-radius: 4px;
+                background: transparent;
+                border: none;
+                transition: all 0.15s;
+                font-size: 14px;
+                font-weight: 500;
+            }
+            .nav-btn:hover {
+                color: #e0e3eb;
+                background-color: #1e222d;
+            }
+            .nav-btn.active {
+                color: #f0b90b;
+                background-color: #1e222d;
+            }
+            .order-type-btn {
+                padding: 6px;
+                background-color: #1e222d;
+                border: 1px solid #2a2e39;
+                color: #848e9c;
+                cursor: pointer;
+                border-radius: 4px;
+                transition: all 0.15s;
+            }
+            .order-type-btn.active {
+                background-color: #2a2e39;
+                color: #e0e3eb;
+                border-color: #4a5568;
+            }
+            .tab-btn.active {
+                color: #e0e3eb;
+                border-bottom-color: #0ecb81;
+            }
+        `;
+        document.head.appendChild(style);
+    </script>
+    
+    <!-- Load app.js for backend integration -->
+    <script src="app.js"></script>
+</body>
+</html>
